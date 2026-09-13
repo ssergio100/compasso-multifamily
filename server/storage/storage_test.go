@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -102,6 +104,80 @@ func TestAdministrativePolicyLifecycle(t *testing.T) {
 		if !kinds[kind] {
 			t.Fatalf("audit missing %s: %+v", kind, events)
 		}
+	}
+}
+
+func TestMultiFamilyPersistenceBoundary(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	now := time.Date(2026, time.September, 13, 12, 0, 0, 0, time.UTC)
+
+	firstOwner, err := store.AdminByLogin(ctx, "test-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondOwner, err := store.CreateFamilyOwner(ctx, "Família Dois", " OWNER@EXAMPLE.COM ", "hash-2", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondOwner.Login != "owner@example.com" || secondOwner.FamilyID == firstOwner.FamilyID {
+		t.Fatalf("second owner=%+v first owner=%+v", secondOwner, firstOwner)
+	}
+	reloaded, err := store.AdminByID(ctx, secondOwner.ID)
+	if err != nil || reloaded.FamilyID != secondOwner.FamilyID || reloaded.AuthGeneration != 1 {
+		t.Fatalf("reloaded owner=%+v err=%v", reloaded, err)
+	}
+
+	firstDevice, err := store.CreateDeviceForFamily(ctx, firstOwner.FamilyID, "Primeiro", "cat", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDevice, err := store.CreateDeviceForFamily(ctx, secondOwner.FamilyID, "Segundo", "dog", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDevices, err := store.ListDevicesForFamily(ctx, firstOwner.FamilyID)
+	if err != nil || len(firstDevices) != 1 || firstDevices[0].ID != firstDevice.ID {
+		t.Fatalf("first family devices=%+v err=%v", firstDevices, err)
+	}
+	secondDevices, err := store.ListDevicesForFamily(ctx, secondOwner.FamilyID)
+	if err != nil || len(secondDevices) != 1 || secondDevices[0].ID != secondDevice.ID {
+		t.Fatalf("second family devices=%+v err=%v", secondDevices, err)
+	}
+	if err := store.DeviceBelongsToFamily(ctx, firstOwner.FamilyID, secondDevice.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-family guard error=%v, want ErrNotFound", err)
+	}
+	if err := store.DeviceBelongsToFamily(ctx, secondOwner.FamilyID, secondDevice.ID); err != nil {
+		t.Fatalf("own-family guard error=%v", err)
+	}
+	suspended, changed, err := store.SetFamilyState(ctx, secondOwner.Login, "suspended", now.Add(time.Minute))
+	if err != nil || !changed || suspended.ID != secondOwner.FamilyID || suspended.State != "suspended" {
+		t.Fatalf("suspend family=%+v changed=%t err=%v", suspended, changed, err)
+	}
+	suspendedOwner, err := store.AdminByID(ctx, secondOwner.ID)
+	if err != nil || suspendedOwner.FamilyState != "suspended" || suspendedOwner.AuthGeneration != 2 {
+		t.Fatalf("suspended owner=%+v err=%v", suspendedOwner, err)
+	}
+	if _, err := store.CreateDeviceForFamily(ctx, secondOwner.FamilyID, "Bloqueado", "cat", now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("suspended family created device: %v", err)
+	}
+	reactivated, changed, err := store.SetFamilyState(ctx, secondOwner.FamilyID, "active", now.Add(2*time.Minute))
+	if err != nil || !changed || reactivated.State != "active" {
+		t.Fatalf("reactivate family=%+v changed=%t err=%v", reactivated, changed, err)
+	}
+	reactivatedOwner, err := store.AdminByID(ctx, secondOwner.ID)
+	if err != nil || reactivatedOwner.AuthGeneration != 3 {
+		t.Fatalf("reactivated owner=%+v err=%v", reactivatedOwner, err)
+	}
+
+	for index := 1; index < 5; index++ {
+		if _, err := store.CreateDeviceForFamily(ctx, firstOwner.FamilyID, fmt.Sprintf("Dispositivo %d", index), "cat", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.CreateDeviceForFamily(ctx, firstOwner.FamilyID, "Sexto", "cat", now); !errors.Is(err, ErrDeviceLimit) {
+		t.Fatalf("sixth device error=%v, want ErrDeviceLimit", err)
 	}
 }
 

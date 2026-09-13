@@ -16,6 +16,8 @@ import (
 var (
 	ErrNotFound    = errors.New("record not found")
 	ErrDeviceLimit = errors.New("family device limit reached")
+	ErrFamilyLimit = errors.New("family limit reached")
+	ErrConflict    = errors.New("record already exists")
 )
 
 type Store struct{ db *sql.DB }

@@ -8,10 +8,12 @@ import (
 )
 
 type session struct {
-	AdminID string
-	Login   string
-	CSRF    string
-	Expires time.Time
+	AdminID        string
+	Login          string
+	FamilyID       string
+	AuthGeneration int64
+	CSRF           string
+	Expires        time.Time
 }
 
 type sessionStore struct {
@@ -24,7 +26,7 @@ func newSessionStore(lifetime time.Duration) *sessionStore {
 	return &sessionStore{lifetime: lifetime, values: make(map[string]session)}
 }
 
-func (s *sessionStore) create(adminID, login string, now time.Time) (string, session, error) {
+func (s *sessionStore) create(adminID, login, familyID string, authGeneration int64, now time.Time) (string, session, error) {
 	token, err := randomToken()
 	if err != nil {
 		return "", session{}, err
@@ -33,7 +35,10 @@ func (s *sessionStore) create(adminID, login string, now time.Time) (string, ses
 	if err != nil {
 		return "", session{}, err
 	}
-	value := session{AdminID: adminID, Login: login, CSRF: csrf, Expires: now.Add(s.lifetime)}
+	value := session{
+		AdminID: adminID, Login: login, FamilyID: familyID, AuthGeneration: authGeneration,
+		CSRF: csrf, Expires: now.Add(s.lifetime),
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for key, existing := range s.values {

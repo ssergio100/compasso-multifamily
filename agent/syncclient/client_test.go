@@ -370,10 +370,7 @@ func TestDecodeLegacyConflictStillExplainsRevisionCause(t *testing.T) {
 func TestRevisionOfflineQueueAndImmediateEnforcement(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.Local)
-	serverStore, err := serverstorage.Open(ctx, filepath.Join(t.TempDir(), "server.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	serverStore := openServerTestStore(t, ctx, filepath.Join(t.TempDir(), "server.db"), now)
 	defer serverStore.Close()
 	device, err := serverStore.CreateDevice(ctx, "Zorin", now)
 	if err != nil {
@@ -511,10 +508,7 @@ func TestTransportErrorsRedactDeviceToken(t *testing.T) {
 func TestSessionBalanceIsAnchoredOnceAndOnlyRefreshedByRealChange(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.Local)
-	serverStore, err := serverstorage.Open(ctx, filepath.Join(t.TempDir(), "server.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	serverStore := openServerTestStore(t, ctx, filepath.Join(t.TempDir(), "server.db"), now)
 	defer serverStore.Close()
 	device, err := serverStore.CreateDevice(ctx, "Anchored balance", now)
 	if err != nil {
@@ -597,10 +591,7 @@ func TestSessionBalanceIsAnchoredOnceAndOnlyRefreshedByRealChange(t *testing.T) 
 func TestThirtyMinuteBonusReplacesOneMinuteAnchorOnlyAfterDurableApplication(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 13, 23, 0, 0, 0, time.Local)
-	serverStore, err := serverstorage.Open(ctx, filepath.Join(t.TempDir(), "server.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	serverStore := openServerTestStore(t, ctx, filepath.Join(t.TempDir(), "server.db"), now)
 	defer serverStore.Close()
 	device, err := serverStore.CreateDevice(ctx, "One minute left", now)
 	if err != nil {
@@ -734,10 +725,7 @@ func TestLegacyDatedBonusUsesHeartbeatLocalDay(t *testing.T) {
 func TestLocalPasswordChangesOnlyAfterSuccessfulSynchronization(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.Local)
-	serverStore, err := serverstorage.Open(ctx, filepath.Join(t.TempDir(), "server.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	serverStore := openServerTestStore(t, ctx, filepath.Join(t.TempDir(), "server.db"), now)
 	defer serverStore.Close()
 	device, err := serverStore.CreateDevice(ctx, "Password sync", now)
 	if err != nil {
@@ -820,6 +808,20 @@ func TestLocalPasswordChangesOnlyAfterSuccessfulSynchronization(t *testing.T) {
 }
 
 type handlerTransport struct{ handler http.Handler }
+
+func openServerTestStore(t *testing.T, ctx context.Context, path string, now time.Time) *serverstorage.Store {
+	t.Helper()
+	store, err := serverstorage.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.BootstrapAdmin(ctx, "sync-test-owner", "test-hash", now)
+	if err != nil || !created {
+		_ = store.Close()
+		t.Fatalf("bootstrap server fixture created=%t err=%v", created, err)
+	}
+	return store
+}
 
 func (transport handlerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	recorder := httptest.NewRecorder()

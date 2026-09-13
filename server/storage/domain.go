@@ -22,6 +22,13 @@ type Admin struct {
 	AuthGeneration int64
 }
 
+type Family struct {
+	ID         string
+	Name       string
+	State      string
+	OwnerLogin string
+}
+
 type Device struct {
 	ID                     string
 	Name                   string
@@ -190,14 +197,25 @@ func (s *Store) HasAdministrators(ctx context.Context) (bool, error) {
 }
 
 func (s *Store) AdminByLogin(ctx context.Context, login string) (Admin, error) {
+	return s.loadAdmin(ctx, `u.login = ?`, strings.TrimSpace(login))
+}
+
+// AdminByID loads the durable account state used to revalidate an in-memory
+// browser session. Account, membership and family state are read together so
+// a suspended or detached account cannot retain access until session expiry.
+func (s *Store) AdminByID(ctx context.Context, id string) (Admin, error) {
+	return s.loadAdmin(ctx, `u.id = ?`, strings.TrimSpace(id))
+}
+
+func (s *Store) loadAdmin(ctx context.Context, predicate, value string) (Admin, error) {
 	var admin Admin
 	var active int
-	err := s.db.QueryRowContext(ctx,
+	err := s.db.QueryRowContext(ctx, fmt.Sprintf(
 		`SELECT u.id, u.login, u.password_hash, u.active, m.family_id, f.state, u.auth_generation
 		 FROM admin_user u
 		 JOIN family_member m ON m.admin_user_id=u.id AND m.role='owner'
 		 JOIN family f ON f.id=m.family_id
-		 WHERE u.login = ?`, strings.TrimSpace(login),
+		 WHERE %s`, predicate), value,
 	).Scan(&admin.ID, &admin.Login, &admin.PasswordHash, &active, &admin.FamilyID, &admin.FamilyState, &admin.AuthGeneration)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Admin{}, ErrNotFound
@@ -207,6 +225,114 @@ func (s *Store) AdminByLogin(ctx context.Context, login string) (Admin, error) {
 	}
 	admin.Active = active != 0
 	return admin, nil
+}
+
+// CreateFamilyOwner atomically creates an active family and its verified
+// owner. It is the persistence boundary used after e-mail confirmation; a
+// pending registration does not call it and therefore does not consume one
+// of the pilot's 100 family slots.
+func (s *Store) CreateFamilyOwner(ctx context.Context, familyName, email, passwordHash string, now time.Time) (Admin, error) {
+	familyName = strings.TrimSpace(familyName)
+	email = strings.ToLower(strings.TrimSpace(email))
+	if familyName == "" || len(familyName) > 80 || email == "" || len(email) > 254 || passwordHash == "" || now.IsZero() {
+		return Admin{}, errors.New("family owner requires name, email, password hash and time")
+	}
+	familyID, err := newID()
+	if err != nil {
+		return Admin{}, err
+	}
+	adminID, err := newID()
+	if err != nil {
+		return Admin{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Admin{}, err
+	}
+	defer tx.Rollback()
+	var familyCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM family`).Scan(&familyCount); err != nil {
+		return Admin{}, err
+	}
+	if familyCount >= 100 {
+		return Admin{}, ErrFamilyLimit
+	}
+	stamp := formatTime(now)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO family(id, name, state, created_at, updated_at)
+		VALUES (?, ?, 'active', ?, ?)`, familyID, familyName, stamp, stamp); err != nil {
+		return Admin{}, fmt.Errorf("create family: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO admin_user(id, login, password_hash, active, created_at, updated_at, email, email_verified_at, auth_generation)
+		VALUES (?, ?, ?, 1, ?, ?, ?, ?, 1)`, adminID, email, passwordHash, stamp, stamp, email, stamp); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return Admin{}, ErrConflict
+		}
+		return Admin{}, fmt.Errorf("create family owner: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO family_member(family_id, admin_user_id, role, created_at)
+		VALUES (?, ?, 'owner', ?)`, familyID, adminID, stamp); err != nil {
+		return Admin{}, fmt.Errorf("attach family owner: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Admin{}, err
+	}
+	return Admin{
+		ID: adminID, Login: email, PasswordHash: passwordHash, Active: true,
+		FamilyID: familyID, FamilyState: "active", AuthGeneration: 1,
+	}, nil
+}
+
+// SetFamilyState is an operator-only persistence operation. Changing state
+// increments the owner's authentication generation so every existing browser
+// session remains invalid even if the family is later reactivated.
+func (s *Store) SetFamilyState(ctx context.Context, target, state string, now time.Time) (Family, bool, error) {
+	target = strings.TrimSpace(target)
+	if target == "" || (state != "active" && state != "suspended") || now.IsZero() {
+		return Family{}, false, errors.New("family state requires a target, valid state and time")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Family{}, false, err
+	}
+	defer tx.Rollback()
+	var family Family
+	err = tx.QueryRowContext(ctx, `
+		SELECT f.id, f.name, f.state, u.login
+		FROM family f
+		JOIN family_member m ON m.family_id=f.id AND m.role='owner'
+		JOIN admin_user u ON u.id=m.admin_user_id
+		WHERE f.id=? OR lower(u.login)=lower(?)
+		LIMIT 1`, target, target,
+	).Scan(&family.ID, &family.Name, &family.State, &family.OwnerLogin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Family{}, false, ErrNotFound
+	}
+	if err != nil {
+		return Family{}, false, err
+	}
+	if family.State == state {
+		if err := tx.Commit(); err != nil {
+			return Family{}, false, err
+		}
+		return family, false, nil
+	}
+	stamp := formatTime(now)
+	if _, err := tx.ExecContext(ctx, `UPDATE family SET state=?, updated_at=? WHERE id=?`, state, stamp, family.ID); err != nil {
+		return Family{}, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE admin_user SET auth_generation=auth_generation+1, updated_at=?
+		WHERE id IN (SELECT admin_user_id FROM family_member WHERE family_id=?)`, stamp, family.ID); err != nil {
+		return Family{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Family{}, false, err
+	}
+	family.State = state
+	return family, true, nil
 }
 
 func (s *Store) CreateDevice(ctx context.Context, name string, now time.Time) (Device, error) {
@@ -303,10 +429,25 @@ func (s *Store) CreateDeviceForFamily(ctx context.Context, familyID, name, avata
 }
 
 func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return s.listDevices(ctx, "", false)
+}
+
+func (s *Store) ListDevicesForFamily(ctx context.Context, familyID string) ([]Device, error) {
+	return s.listDevices(ctx, strings.TrimSpace(familyID), true)
+}
+
+func (s *Store) listDevices(ctx context.Context, familyID string, scoped bool) ([]Device, error) {
+	query := `
 		SELECT id, name, avatar_key, last_seen_at, policy_revision, applied_policy_revision, applied_control_revision,
 		       graphical_session_active, graphical_session_locked, graphical_session_id, created_at
-		FROM device ORDER BY name, id`)
+		FROM device`
+	args := []interface{}{}
+	if scoped {
+		query += ` WHERE family_id=?`
+		args = append(args, familyID)
+	}
+	query += ` ORDER BY name, id`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list devices: %w", err)
 	}
@@ -341,6 +482,20 @@ func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 		devices = append(devices, device)
 	}
 	return devices, rows.Err()
+}
+
+// DeviceBelongsToFamily is the mandatory authorization guard for an
+// administrative device route. It intentionally returns only existence, not
+// target data, and maps a cross-family reference to ErrNotFound.
+func (s *Store) DeviceBelongsToFamily(ctx context.Context, familyID, deviceID string) error {
+	var present int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM device WHERE family_id=? AND id=?`, strings.TrimSpace(familyID), strings.TrimSpace(deviceID),
+	).Scan(&present)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
 }
 
 func (s *Store) LoadDevice(ctx context.Context, id string) (Device, Policy, error) {

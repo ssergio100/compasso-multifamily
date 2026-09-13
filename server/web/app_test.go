@@ -819,7 +819,7 @@ func TestRejectedHeartbeatExplainsTheFailureInHumanLanguage(t *testing.T) {
 	}
 }
 
-func TestAdministrativeCommunicationLogsCanBeConfiguredAndDeleted(t *testing.T) {
+func TestAdministrativeCommunicationLogsExposeOperatorRetentionAndCanBeDeleted(t *testing.T) {
 	fixture := newWebFixture(t, false, time.Hour)
 	defer fixture.store.Close()
 	fixture.login(t)
@@ -843,9 +843,9 @@ func TestAdministrativeCommunicationLogsCanBeConfiguredAndDeleted(t *testing.T) 
 	if len(listing.Events) != 0 || listing.RetentionDays != 30 {
 		t.Fatalf("communication listing=%+v", listing)
 	}
-	response = fixture.requestJSON(http.MethodPut, devicePath+"/communication/settings", updateCommunicationRetentionRequest{RetentionDays: 7}, true)
-	if response.Code != http.StatusOK {
-		t.Fatalf("retention status=%d body=%s", response.Code, response.Body.String())
+	response = fixture.requestJSON(http.MethodPut, devicePath+"/communication/settings", map[string]int{"retention_days": 7}, true)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("family changed operator retention status=%d body=%s", response.Code, response.Body.String())
 	}
 	response = fixture.requestJSON(http.MethodDelete, devicePath+"/communication", nil, true)
 	if response.Code != http.StatusOK {
@@ -853,7 +853,7 @@ func TestAdministrativeCommunicationLogsCanBeConfiguredAndDeleted(t *testing.T) 
 	}
 	response = fixture.requestJSON(http.MethodGet, devicePath+"/communication", nil, false)
 	decodeResponse(t, response, &listing)
-	if len(listing.Events) != 0 || listing.RetentionDays != 7 {
+	if len(listing.Events) != 0 || listing.RetentionDays != 30 {
 		t.Fatalf("communication after delete=%+v", listing)
 	}
 }
@@ -1044,6 +1044,118 @@ func TestLocalAgentBonusAppearsInAdministrativeActivities(t *testing.T) {
 	if activity.ID != "local-bonus-web-30m" || activity.Origin != "device" ||
 		activity.Status != "completed" || activity.Details["minutes"] != "30" {
 		t.Fatalf("local activity=%+v", activity)
+	}
+}
+
+func TestAdministrativeRoutesIsolateFamiliesWithoutSideEffects(t *testing.T) {
+	fixture := newWebFixture(t, false, time.Hour)
+	defer fixture.store.Close()
+	fixture.login(t)
+	ctx := context.Background()
+
+	firstOwner, err := fixture.store.AdminByLogin(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDevice, err := fixture.store.CreateDeviceForFamily(ctx, firstOwner.FamilyID, "Da primeira família", "cat", fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondOwner, err := fixture.store.CreateFamilyOwner(ctx, "Família Dois", "owner@example.com", "hash", fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDevice, err := fixture.store.CreateDeviceForFamily(ctx, secondOwner.FamilyID, "Da segunda família", "dog", fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listingResponse := fixture.requestJSON(http.MethodGet, "/api/v1/admin/devices", nil, false)
+	var listing struct {
+		Devices []adminDeviceResponse `json:"devices"`
+	}
+	decodeResponse(t, listingResponse, &listing)
+	if listingResponse.Code != http.StatusOK || len(listing.Devices) != 1 || listing.Devices[0].ID != firstDevice.ID {
+		t.Fatalf("scoped listing status=%d devices=%+v", listingResponse.Code, listing.Devices)
+	}
+
+	beforeAudit, err := fixture.store.ListAudit(ctx, secondDevice.ID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devicePath := "/api/v1/admin/devices/" + secondDevice.ID
+	crossFamilyRequests := []struct {
+		name, method, path string
+		payload            interface{}
+	}{
+		{"detail", http.MethodGet, devicePath, nil},
+		{"status", http.MethodGet, devicePath + "/status", nil},
+		{"stream", http.MethodGet, devicePath + "/stream", nil},
+		{"policy", http.MethodPut, devicePath + "/policy", updateAdminPolicyRequest{}},
+		{"routine", http.MethodPost, devicePath + "/routines", saveAdminRoutineRequest{}},
+		{"password", http.MethodPut, devicePath + "/password", updateAdminPasswordRequest{}},
+		{"token", http.MethodPost, devicePath + "/token", nil},
+		{"bonus", http.MethodPost, devicePath + "/bonus", addAdminBonusRequest{Minutes: 30}},
+		{"command", http.MethodPost, devicePath + "/commands", queueAdminCommandRequest{Command: "pause_monitoring"}},
+		{"command status", http.MethodGet, devicePath + "/commands/unknown", nil},
+		{"audit", http.MethodGet, devicePath + "/events", nil},
+		{"activities", http.MethodGet, devicePath + "/activities", nil},
+		{"communication", http.MethodGet, devicePath + "/communication", nil},
+		{"identity", http.MethodPatch, devicePath, updateAdminDeviceRequest{Name: "Nome invadido", AvatarKey: "dog"}},
+	}
+	for _, request := range crossFamilyRequests {
+		response := fixture.requestJSON(request.method, request.path, request.payload, true)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("cross-family %s status=%d body=%s", request.name, response.Code, response.Body.String())
+		}
+	}
+	if fixture.app.hub.hasSubscribers(secondDevice.ID) {
+		t.Fatal("cross-family stream subscribed to target device")
+	}
+
+	storedDevice, _, err := fixture.store.LoadDevice(ctx, secondDevice.ID)
+	if err != nil || storedDevice.Name != "Da segunda família" || storedDevice.AvatarKey != "dog" {
+		t.Fatalf("cross-family mutation changed target=%+v err=%v", storedDevice, err)
+	}
+	afterAudit, err := fixture.store.ListAudit(ctx, secondDevice.ID, 100)
+	if err != nil || len(afterAudit) != len(beforeAudit) {
+		t.Fatalf("cross-family audit before=%d after=%d err=%v", len(beforeAudit), len(afterAudit), err)
+	}
+	logs, err := fixture.store.ListCommunicationLogs(ctx, secondDevice.ID, 0, 100)
+	if err != nil || len(logs) != 0 {
+		t.Fatalf("cross-family communication logs=%+v err=%v", logs, err)
+	}
+}
+
+func TestAdministrativeSessionIsRevalidatedAgainstDurableIdentity(t *testing.T) {
+	fixture := newWebFixture(t, false, time.Hour)
+	defer fixture.store.Close()
+	fixture.login(t)
+	admin, err := fixture.store.AdminByLogin(context.Background(), "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := fixture.sessionCookie.Value
+	if _, changed, err := fixture.store.SetFamilyState(
+		context.Background(), admin.FamilyID, "suspended", fixture.now.Add(time.Minute),
+	); err != nil || !changed {
+		t.Fatalf("suspend family changed=%t err=%v", changed, err)
+	}
+	response := fixture.requestJSON(http.MethodGet, "/api/v1/admin/devices", nil, false)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("stale session status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, ok := fixture.app.sessions.get(token, fixture.now); ok {
+		t.Fatal("suspended family session remained in memory")
+	}
+	if _, changed, err := fixture.store.SetFamilyState(
+		context.Background(), admin.FamilyID, "active", fixture.now.Add(2*time.Minute),
+	); err != nil || !changed {
+		t.Fatalf("reactivate family changed=%t err=%v", changed, err)
+	}
+	response = fixture.requestJSON(http.MethodGet, "/api/v1/admin/devices", nil, false)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("old session revived after reactivation status=%d", response.Code)
 	}
 }
 

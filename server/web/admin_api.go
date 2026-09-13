@@ -37,10 +37,6 @@ type adminBonusStatusResponse struct {
 	Acknowledged bool `json:"acknowledged"`
 }
 
-type updateCommunicationRetentionRequest struct {
-	RetentionDays int `json:"retention_days"`
-}
-
 type adminSetupRequest struct {
 	Login                string `json:"login"`
 	Password             string `json:"password"`
@@ -200,14 +196,16 @@ func (a *App) adminSessionAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		admin, err := a.store.AdminByLogin(r.Context(), request.Login)
 		validCredentials := false
-		if err == nil && admin.Active {
+		if err == nil && admin.Active && admin.FamilyState == "active" {
 			validCredentials, _ = localauth.VerifyPassword(request.Password, admin.PasswordHash)
 		}
 		if !validCredentials {
 			writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
-		sessionToken, current, err := a.sessions.create(admin.ID, admin.Login, a.now())
+		sessionToken, current, err := a.sessions.create(
+			admin.ID, admin.Login, admin.FamilyID, admin.AuthGeneration, a.now(),
+		)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "internal error")
 			return
@@ -287,7 +285,9 @@ func (a *App) adminSetupAPI(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "could not start administrator session")
 		return
 	}
-	sessionToken, current, err := a.sessions.create(administrator.ID, administrator.Login, a.now())
+	sessionToken, current, err := a.sessions.create(
+		administrator.ID, administrator.Login, administrator.FamilyID, administrator.AuthGeneration, a.now(),
+	)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "could not start administrator session")
 		return
@@ -309,7 +309,7 @@ func (a *App) adminDevicesAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		devices, err := a.store.ListDevices(r.Context())
+		devices, err := a.store.ListDevicesForFamily(r.Context(), current.FamilyID)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "could not load devices")
 			return
@@ -328,8 +328,12 @@ func (a *App) adminDevicesAPI(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "invalid request")
 			return
 		}
-		device, err := a.store.CreateDeviceWithAvatar(r.Context(), request.Name, request.AvatarKey, a.now())
+		device, err := a.store.CreateDeviceForFamily(r.Context(), current.FamilyID, request.Name, request.AvatarKey, a.now())
 		if err != nil {
+			if errors.Is(err, storage.ErrDeviceLimit) {
+				writeJSONError(w, http.StatusConflict, "family device limit reached")
+				return
+			}
 			writeJSONError(w, http.StatusBadRequest, "invalid device")
 			return
 		}
@@ -351,8 +355,18 @@ func (a *App) adminDeviceAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deviceID := pathParts[0]
+	device, err := a.store.AuthorizeFamilyDevice(r.Context(), current.FamilyID, deviceID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			writeJSONError(w, http.StatusNotFound, "device not found")
+		} else {
+			writeJSONError(w, http.StatusInternalServerError, "could not authorize device")
+		}
+		return
+	}
+	markAdministrativeCommunicationAuthorized(r, device)
 	if len(pathParts) == 1 {
-		a.adminDeviceRootAPI(w, r, current, deviceID)
+		a.adminDeviceRootAPI(w, r, current, device)
 		return
 	}
 	if len(pathParts) > 2 && pathParts[1] != "routines" && pathParts[1] != "commands" && pathParts[1] != "communication" && pathParts[1] != "activities" {
@@ -361,56 +375,56 @@ func (a *App) adminDeviceAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	switch pathParts[1] {
 	case "status":
-		a.adminDeviceStatusAPI(w, r, deviceID)
+		a.adminDeviceStatusAPI(w, r, device)
 	case "stream":
-		a.adminDeviceStreamAPI(w, r, deviceID)
+		a.adminDeviceStreamAPI(w, r, device)
 	case "policy":
-		a.adminDevicePolicyAPI(w, r, current, deviceID)
+		a.adminDevicePolicyAPI(w, r, current, device)
 	case "routines":
-		a.adminDeviceRoutinesAPI(w, r, current, deviceID, pathParts[2:])
+		a.adminDeviceRoutinesAPI(w, r, current, device, pathParts[2:])
 	case "password":
-		a.adminDevicePasswordAPI(w, r, current, deviceID)
+		a.adminDevicePasswordAPI(w, r, current, device)
 	case "token":
-		a.adminDeviceTokenAPI(w, r, current, deviceID)
+		a.adminDeviceTokenAPI(w, r, current, device)
 	case "bonus":
-		a.adminDeviceBonusAPI(w, r, current, deviceID)
+		a.adminDeviceBonusAPI(w, r, current, device)
 	case "commands":
 		if len(pathParts) == 3 {
-			a.adminDeviceBonusStatusAPI(w, r, deviceID, pathParts[2])
+			a.adminDeviceBonusStatusAPI(w, r, device, pathParts[2])
 		} else if len(pathParts) == 2 {
-			a.adminDeviceCommandAPI(w, r, current, deviceID)
+			a.adminDeviceCommandAPI(w, r, current, device)
 		} else {
 			writeJSONError(w, http.StatusNotFound, "not found")
 		}
 	case "events":
-		a.adminDeviceEventsAPI(w, r, deviceID)
+		a.adminDeviceEventsAPI(w, r, device)
 	case "activities":
-		a.adminDeviceActivitiesAPI(w, r, current, deviceID, pathParts[2:])
+		a.adminDeviceActivitiesAPI(w, r, current, device, pathParts[2:])
 	case "communication":
-		a.adminDeviceCommunicationAPI(w, r, current, deviceID, pathParts[2:])
+		a.adminDeviceCommunicationAPI(w, r, current, device, pathParts[2:])
 	default:
 		writeJSONError(w, http.StatusNotFound, "not found")
 	}
 }
 
-func (a *App) adminDeviceRootAPI(w http.ResponseWriter, r *http.Request, current session, deviceID string) {
+func (a *App) adminDeviceRootAPI(w http.ResponseWriter, r *http.Request, current session, device storage.FamilyDevice) {
 	switch r.Method {
 	case http.MethodGet:
-		device, storedPolicy, liveStatus, err := a.loadDeviceLiveStatus(r.Context(), deviceID)
+		storedDevice, storedPolicy, liveStatus, err := a.loadAdministrativeDeviceLiveStatus(r.Context(), device)
 		if !writeAdminReadError(w, err) {
 			return
 		}
-		control, err := a.store.LoadControl(r.Context(), deviceID)
+		control, err := device.LoadControl(r.Context())
 		if !writeAdminReadError(w, err) {
 			return
 		}
-		events, err := a.store.ListAudit(r.Context(), deviceID, 30)
+		events, err := device.ListAudit(r.Context(), 30)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "could not load audit events")
 			return
 		}
 		writeJSON(w, http.StatusOK, adminDeviceDetailResponse{
-			Device: a.adminDeviceResponse(device), Policy: adminPolicyResponseFromStorage(storedPolicy),
+			Device: a.adminDeviceResponse(storedDevice), Policy: adminPolicyResponseFromStorage(storedPolicy),
 			Control: adminControlResponse{Revision: control.Revision, MonitoringPaused: control.MonitoringPaused, ManualBlock: control.ManualBlock},
 			Status:  liveStatus, Events: adminAuditEventsResponse(events),
 		})
@@ -425,9 +439,9 @@ func (a *App) adminDeviceRootAPI(w http.ResponseWriter, r *http.Request, current
 		}
 		var err error
 		if request.AvatarKey == "" {
-			err = a.store.RenameDevice(r.Context(), deviceID, request.Name, a.now())
+			err = device.Rename(r.Context(), request.Name, a.now())
 		} else {
-			err = a.store.UpdateDeviceIdentity(r.Context(), deviceID, request.Name, request.AvatarKey, a.now())
+			err = device.UpdateIdentity(r.Context(), request.Name, request.AvatarKey, a.now())
 		}
 		if err != nil {
 			writeAdminMutationError(w, err)
@@ -442,7 +456,7 @@ func (a *App) adminDeviceRootAPI(w http.ResponseWriter, r *http.Request, current
 		if !requireAdminCSRF(w, r, current) {
 			return
 		}
-		if err := a.store.DeleteDevice(r.Context(), deviceID); err != nil {
+		if err := device.Delete(r.Context()); err != nil {
 			writeAdminMutationError(w, err)
 			return
 		}
@@ -454,20 +468,20 @@ func (a *App) adminDeviceRootAPI(w http.ResponseWriter, r *http.Request, current
 	}
 }
 
-func (a *App) adminDeviceStatusAPI(w http.ResponseWriter, r *http.Request, deviceID string) {
+func (a *App) adminDeviceStatusAPI(w http.ResponseWriter, r *http.Request, device storage.FamilyDevice) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	_, _, liveStatus, err := a.loadDeviceLiveStatus(r.Context(), deviceID)
+	_, _, liveStatus, err := a.loadAdministrativeDeviceLiveStatus(r.Context(), device)
 	if !writeAdminReadError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, liveStatus)
 }
 
-func (a *App) adminDevicePolicyAPI(w http.ResponseWriter, r *http.Request, current session, deviceID string) {
+func (a *App) adminDevicePolicyAPI(w http.ResponseWriter, r *http.Request, current session, device storage.FamilyDevice) {
 	if r.Method != http.MethodPut {
 		w.Header().Set("Allow", http.MethodPut)
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -481,7 +495,7 @@ func (a *App) adminDevicePolicyAPI(w http.ResponseWriter, r *http.Request, curre
 		writeJSONError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	if err := a.store.SaveQuotas(r.Context(), deviceID, request.WeeklyQuota, request.WarningMinutes, a.now()); err != nil {
+	if err := device.SaveQuotas(r.Context(), request.WeeklyQuota, request.WarningMinutes, a.now()); err != nil {
 		writeAdminMutationError(w, err)
 		return
 	}
@@ -489,7 +503,7 @@ func (a *App) adminDevicePolicyAPI(w http.ResponseWriter, r *http.Request, curre
 	writeJSON(w, http.StatusOK, map[string]string{"message": "policy updated"})
 }
 
-func (a *App) adminDeviceRoutinesAPI(w http.ResponseWriter, r *http.Request, current session, deviceID string, pathParts []string) {
+func (a *App) adminDeviceRoutinesAPI(w http.ResponseWriter, r *http.Request, current session, device storage.FamilyDevice, pathParts []string) {
 	if !requireAdminCSRF(w, r, current) {
 		return
 	}
@@ -506,7 +520,7 @@ func (a *App) adminDeviceRoutinesAPI(w http.ResponseWriter, r *http.Request, cur
 			writeJSONError(w, http.StatusNotFound, "not found")
 			return
 		}
-		if err := a.store.DeleteRoutine(r.Context(), deviceID, routineID, a.now()); err != nil {
+		if err := device.DeleteRoutine(r.Context(), routineID, a.now()); err != nil {
 			writeAdminMutationError(w, err)
 			return
 		}
@@ -528,7 +542,7 @@ func (a *App) adminDeviceRoutinesAPI(w http.ResponseWriter, r *http.Request, cur
 		writeJSONError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	createdRoutineID, err := a.store.SaveRoutine(r.Context(), deviceID, storage.Routine{
+	createdRoutineID, err := device.SaveRoutine(r.Context(), storage.Routine{
 		ID: routineID, Name: request.Name, IconKey: request.IconKey, Days: request.Days, Start: request.Start,
 		End: request.End, Enabled: request.Enabled,
 	}, a.now())
@@ -549,7 +563,7 @@ func (a *App) adminDeviceRoutinesAPI(w http.ResponseWriter, r *http.Request, cur
 	writeJSON(w, status, map[string]string{"id": createdRoutineID})
 }
 
-func (a *App) adminDevicePasswordAPI(w http.ResponseWriter, r *http.Request, current session, deviceID string) {
+func (a *App) adminDevicePasswordAPI(w http.ResponseWriter, r *http.Request, current session, device storage.FamilyDevice) {
 	if r.Method != http.MethodPut {
 		w.Header().Set("Allow", http.MethodPut)
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -568,7 +582,7 @@ func (a *App) adminDevicePasswordAPI(w http.ResponseWriter, r *http.Request, cur
 		writeJSONError(w, http.StatusInternalServerError, "could not update password")
 		return
 	}
-	if err := a.store.SetLocalPassword(r.Context(), deviceID, verifier, a.now()); err != nil {
+	if err := device.SetLocalPassword(r.Context(), verifier, a.now()); err != nil {
 		writeAdminMutationError(w, err)
 		return
 	}
@@ -576,7 +590,7 @@ func (a *App) adminDevicePasswordAPI(w http.ResponseWriter, r *http.Request, cur
 	writeJSON(w, http.StatusOK, map[string]string{"message": "password updated"})
 }
 
-func (a *App) adminDeviceTokenAPI(w http.ResponseWriter, r *http.Request, current session, deviceID string) {
+func (a *App) adminDeviceTokenAPI(w http.ResponseWriter, r *http.Request, current session, device storage.FamilyDevice) {
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		w.Header().Set("Allow", "POST, DELETE")
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -586,7 +600,7 @@ func (a *App) adminDeviceTokenAPI(w http.ResponseWriter, r *http.Request, curren
 		return
 	}
 	if r.Method == http.MethodDelete {
-		if err := a.store.RevokeDeviceToken(r.Context(), deviceID, a.now()); err != nil {
+		if err := device.RevokeToken(r.Context(), a.now()); err != nil {
 			writeAdminMutationError(w, err)
 			return
 		}
@@ -594,16 +608,16 @@ func (a *App) adminDeviceTokenAPI(w http.ResponseWriter, r *http.Request, curren
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	token, err := a.store.IssueDeviceToken(r.Context(), deviceID, a.now())
+	token, err := device.IssueToken(r.Context(), a.now())
 	if err != nil {
 		writeAdminMutationError(w, err)
 		return
 	}
 	addCommunicationDetail(r, "action", "token_issued")
-	writeJSON(w, http.StatusCreated, map[string]string{"device_id": deviceID, "device_token": token})
+	writeJSON(w, http.StatusCreated, map[string]string{"device_id": device.ID(), "device_token": token})
 }
 
-func (a *App) adminDeviceBonusAPI(w http.ResponseWriter, r *http.Request, current session, deviceID string) {
+func (a *App) adminDeviceBonusAPI(w http.ResponseWriter, r *http.Request, current session, device storage.FamilyDevice) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -617,8 +631,8 @@ func (a *App) adminDeviceBonusAPI(w http.ResponseWriter, r *http.Request, curren
 		writeJSONError(w, http.StatusBadRequest, "bonus must be between 1 minute and 12 hours")
 		return
 	}
-	operationID, err := a.store.QueueRemoteBonus(
-		r.Context(), deviceID, int64(request.Minutes*60), a.now(),
+	operationID, err := device.QueueRemoteBonus(
+		r.Context(), int64(request.Minutes*60), a.now(),
 	)
 	if err != nil {
 		writeAdminMutationError(w, err)
@@ -626,18 +640,18 @@ func (a *App) adminDeviceBonusAPI(w http.ResponseWriter, r *http.Request, curren
 	}
 	addCommunicationDetail(r, "bonus_minutes", strconv.Itoa(request.Minutes))
 	addCommunicationDetail(r, "operation_id", operationID)
-	a.publishDeviceActivity(deviceID, operationID)
+	a.publishAdministrativeDeviceActivity(device, operationID)
 	writeJSON(w, http.StatusAccepted, adminBonusResponse{
 		Message: "bonus queued", OperationID: operationID,
 	})
 }
 
-func (a *App) adminDeviceActivitiesAPI(w http.ResponseWriter, r *http.Request, current session, deviceID string, pathParts []string) {
+func (a *App) adminDeviceActivitiesAPI(w http.ResponseWriter, r *http.Request, current session, device storage.FamilyDevice, pathParts []string) {
 	if r.Method == http.MethodDelete && len(pathParts) == 1 && pathParts[0] == "completed" {
 		if !requireAdminCSRF(w, r, current) {
 			return
 		}
-		deleted, err := a.store.DeleteCompletedDeviceActivities(r.Context(), deviceID)
+		deleted, err := device.DeleteCompletedActivities(r.Context())
 		if !writeAdminReadError(w, err) {
 			return
 		}
@@ -654,15 +668,11 @@ func (a *App) adminDeviceActivitiesAPI(w http.ResponseWriter, r *http.Request, c
 		return
 	}
 	if len(pathParts) == 1 {
-		activity, err := a.store.LoadDeviceActivity(r.Context(), deviceID, pathParts[0])
+		activity, err := device.LoadActivity(r.Context(), pathParts[0])
 		if !writeAdminReadError(w, err) {
 			return
 		}
 		writeJSON(w, http.StatusOK, activity)
-		return
-	}
-	if _, err := a.store.CleanupExpiredCompletedActivities(r.Context(), a.now()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "could not clean completed activities")
 		return
 	}
 	limit := 100
@@ -674,27 +684,27 @@ func (a *App) adminDeviceActivitiesAPI(w http.ResponseWriter, r *http.Request, c
 		}
 		limit = parsed
 	}
-	activities, err := a.store.ListDeviceActivities(r.Context(), deviceID, limit)
+	activities, err := device.ListActivities(r.Context(), limit)
 	if !writeAdminReadError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"activities": activities})
 }
 
-func (a *App) adminDeviceBonusStatusAPI(w http.ResponseWriter, r *http.Request, deviceID, operationID string) {
+func (a *App) adminDeviceBonusStatusAPI(w http.ResponseWriter, r *http.Request, device storage.FamilyDevice, operationID string) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	acknowledged, err := a.store.RemoteBonusAcknowledged(r.Context(), deviceID, operationID)
+	acknowledged, err := device.RemoteBonusAcknowledged(r.Context(), operationID)
 	if !writeAdminReadError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, adminBonusStatusResponse{Acknowledged: acknowledged})
 }
 
-func (a *App) adminDeviceCommandAPI(w http.ResponseWriter, r *http.Request, current session, deviceID string) {
+func (a *App) adminDeviceCommandAPI(w http.ResponseWriter, r *http.Request, current session, device storage.FamilyDevice) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -708,19 +718,19 @@ func (a *App) adminDeviceCommandAPI(w http.ResponseWriter, r *http.Request, curr
 		writeJSONError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	operationID, err := a.store.QueueControlOperation(r.Context(), deviceID, request.Command, a.now())
+	operationID, err := device.QueueControlOperation(r.Context(), request.Command, a.now())
 	if err != nil {
 		writeAdminMutationError(w, err)
 		return
 	}
 	addCommunicationDetail(r, "command", request.Command)
 	addCommunicationDetail(r, "operation_id", operationID)
-	a.publishDeviceActivity(deviceID, operationID)
-	a.publishActivitiesChanged(deviceID)
+	a.publishAdministrativeDeviceActivity(device, operationID)
+	a.publishAdministrativeActivitiesChanged(device)
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "command queued", "operation_id": operationID})
 }
 
-func (a *App) adminDeviceEventsAPI(w http.ResponseWriter, r *http.Request, deviceID string) {
+func (a *App) adminDeviceEventsAPI(w http.ResponseWriter, r *http.Request, device storage.FamilyDevice) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -735,7 +745,7 @@ func (a *App) adminDeviceEventsAPI(w http.ResponseWriter, r *http.Request, devic
 		}
 		limit = parsed
 	}
-	events, err := a.store.ListAudit(r.Context(), deviceID, limit)
+	events, err := device.ListAudit(r.Context(), limit)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "could not load audit events")
 		return

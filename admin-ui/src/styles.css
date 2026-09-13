@@ -57,6 +57,7 @@ main#workspace{min-width:0}.workspace-header{height:130px;border-bottom:1px soli
 .communication-controls .heartbeat-toggle{display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid #aaa5aa;padding-inline:12px;font-size:.72rem;font-weight:600;white-space:nowrap;cursor:pointer}
 .communication-controls .heartbeat-toggle input{width:14px;height:14px;flex:0 0 auto;margin:0;border:0;padding:0;accent-color:var(--sage)}
 .communication-controls .delete-logs{width:auto;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--coral);border-color:rgb(231 111 81 / .68);white-space:nowrap;font-weight:600;padding-inline:14px}
+.communication-controls .retention-note{min-height:48px;display:flex;align-items:center;justify-content:center;border:1px solid #aaa5aa;color:var(--muted);font-size:.72rem;padding-inline:13px;white-space:nowrap}
 .communication-controls .delete-logs:hover{background:var(--coral-soft)}
 .communication-controls .delete-logs:disabled{cursor:not-allowed;opacity:.45;background:transparent}
 .communication-error{display:grid;grid-template-columns:24px 1fr;gap:10px;align-items:start;border-left:4px solid var(--danger);background:var(--coral-soft);color:var(--danger);padding:12px 14px;margin:-10px 0 22px;font-size:.75rem}.communication-error strong,.communication-error span{display:block}.communication-error strong{margin-bottom:2px}

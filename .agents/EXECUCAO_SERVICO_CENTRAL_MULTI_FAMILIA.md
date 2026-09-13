@@ -49,8 +49,8 @@ inventário de hardware ou interfaces descontinuadas.
 | Marco | Estado | Evidência para concluir |
 | --- | --- | --- |
 | 0. Preparação | concluído | branch criada e diário versionável iniciado |
-| 1. Isolamento | em andamento | migração preserva dados e testes entre duas famílias impedem qualquer acesso ou efeito cruzado |
-| 2. Entrada autônoma | pendente | cadastro, confirmação, login, recuperação, exclusão e limite de cinco dispositivos funcionam sem operador |
+| 1. Isolamento | concluído | migração preserva dados; duas famílias não acessam dados, efeitos, logs ou SSE entre si; suspensão local validada |
+| 2. Entrada autônoma | em andamento | cadastro, confirmação, login, recuperação, exclusão e limite de cinco dispositivos funcionam sem operador |
 | 3. Agente e carga | pendente | UUID, vínculo, rotação, erros e heartbeat eficiente passam nos testes |
 | 4. Abertura do piloto | pendente | suíte, restauração e carga de 500 agentes aprovadas antes da segunda família |
 
@@ -97,12 +97,51 @@ inventário de hardware ou interfaces descontinuadas.
   transacional de cinco dispositivos. A função antiga é apenas ponte enquanto
   os chamadores são migrados e falha se não houver exatamente uma família.
 
+### 2026-09-13 — marco 1 concluído: isolamento por família
+
+- A sessão em memória passou a carregar `family_id` e `auth_generation`. Toda
+  requisição, inclusive cada keep-alive SSE, recarrega conta, associação e
+  estado da família; suspensão ou mudança de geração remove a sessão.
+- Listagem e criação usam a família da sessão. A sexta criação responde
+  conflito e não insere dados.
+- Criado `storage.FamilyDevice`, uma capacidade não forjável fora do storage.
+  Ela nasce somente após consulta por `family_id + device_id` e revalida esse
+  par em cada leitura, mutação, atividade, auditoria ou diagnóstico pedido por
+  um administrador. As operações autenticadas do agente continuam separadas.
+- Todos os handlers administrativos de dispositivo, o snapshot/keep-alive SSE,
+  e as publicações originadas pela interface recebem o dispositivo já
+  autorizado. IDs brutos da URL não chegam a middlewares de gravação.
+- Tentativas cruzadas retornam `404` antes de interpretar o corpo. Teste com
+  duas famílias percorre detalhe, estado, política, rotinas, senha, token,
+  bônus, comandos, auditoria, atividades, diagnóstico e stream, confirmando
+  ausência de alteração, auditoria, diagnóstico e assinatura SSE no alvo.
+- Adicionados os comandos locais `-suspend-family` e
+  `-reactivate-family`, por login do proprietário ou ID da família. Cada
+  mudança incrementa `auth_generation`; por isso uma sessão antiga não revive
+  após a reativação. O uso via Docker Compose está documentado.
+- A retenção de diagnóstico deixou de ser mutável pela família: a API familiar
+  apenas informa o valor global e a `admin-ui` vigente o mostra como leitura.
+  A limpeza dos registros do próprio dispositivo permanece disponível.
+- A primeira execução integral encontrou quatro fixtures de `agent/syncclient`
+  que ainda criavam dispositivo em banco vazio. O helper compartilhado agora
+  cria a família proprietária antes do dispositivo; os quatro testes passaram.
+
 ## Próximo passo exato
 
-Adicionar `family_id` e `auth_generation` à sessão, revalidá-la no banco em
-cada requisição e SSE, e migrar listagem/criação/rotas administrativas para
-sempre autorizar `family_id + device_id` antes de qualquer leitura ou efeito.
+Implementar a persistência e a API do cadastro pendente: normalizar e-mail,
+validar senha, armazenar apenas o hash do token de confirmação com expiração de
+24 horas e criar família/proprietário atomicamente somente ao confirmar. Usar
+uma interface de envio de e-mail substituível nos testes e aplicar limites de
+taxa antes de expor a tela na `admin-ui`.
 
 ## Validação acumulada
 
 - `go test ./server/storage` — aprovado após a migração `0015`.
+- `go test ./server/storage ./server/cmd/tempo-server` — aprovado com
+  isolamento, limite de dispositivos e suspensão/reativação.
+- testes web focados — aprovados para sessão durável e todas as rotas cruzadas.
+- `npm --prefix admin-ui run typecheck` e `npm --prefix admin-ui run build` —
+  aprovados após tornar a retenção somente leitura.
+- `make test` — aprovado integralmente ao concluir o marco 1 (Go, 22 testes da
+  interface local, `admin-ui`, 15 migrações do servidor, hardening,
+  documentação e builds).

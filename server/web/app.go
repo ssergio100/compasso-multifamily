@@ -123,7 +123,17 @@ func (a *App) authenticated(r *http.Request) (session, string, bool) {
 		return session{}, "", false
 	}
 	value, ok := a.sessions.get(cookie.Value, a.now())
-	return value, cookie.Value, ok
+	if !ok {
+		return session{}, "", false
+	}
+	admin, err := a.store.AdminByID(r.Context(), value.AdminID)
+	if err != nil || !admin.Active || admin.FamilyState != "active" ||
+		admin.FamilyID != value.FamilyID || admin.AuthGeneration != value.AuthGeneration {
+		a.sessions.delete(cookie.Value)
+		return session{}, "", false
+	}
+	value.Login = admin.Login
+	return value, cookie.Value, true
 }
 
 func (a *App) setCookie(w http.ResponseWriter, cookie *http.Cookie) {

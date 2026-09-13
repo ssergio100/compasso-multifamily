@@ -27,16 +27,62 @@ type deviceLiveStatus struct {
 	ControlStatus          string `json:"control_status"`
 }
 
+type deviceLiveStatusSource interface {
+	Load(context.Context) (storage.Device, storage.Policy, error)
+	LoadControl(context.Context) (storage.Control, error)
+	PendingControlKind(context.Context) (string, error)
+	LatestHeartbeatLocalDate(context.Context) (string, error)
+	LoadDailySummary(context.Context, string) (storage.DailySummary, error)
+	UnacknowledgedRemoteBonusSeconds(context.Context, string) (int64, error)
+}
+
+type internalDeviceLiveStatusSource struct {
+	store    *storage.Store
+	deviceID string
+}
+
+func (s internalDeviceLiveStatusSource) Load(ctx context.Context) (storage.Device, storage.Policy, error) {
+	return s.store.LoadDevice(ctx, s.deviceID)
+}
+
+func (s internalDeviceLiveStatusSource) LoadControl(ctx context.Context) (storage.Control, error) {
+	return s.store.LoadControl(ctx, s.deviceID)
+}
+
+func (s internalDeviceLiveStatusSource) PendingControlKind(ctx context.Context) (string, error) {
+	return s.store.PendingControlKind(ctx, s.deviceID)
+}
+
+func (s internalDeviceLiveStatusSource) LatestHeartbeatLocalDate(ctx context.Context) (string, error) {
+	return s.store.LatestHeartbeatLocalDate(ctx, s.deviceID)
+}
+
+func (s internalDeviceLiveStatusSource) LoadDailySummary(ctx context.Context, localDate string) (storage.DailySummary, error) {
+	return s.store.LoadDailySummary(ctx, s.deviceID, localDate)
+}
+
+func (s internalDeviceLiveStatusSource) UnacknowledgedRemoteBonusSeconds(ctx context.Context, localDate string) (int64, error) {
+	return s.store.UnacknowledgedRemoteBonusSeconds(ctx, s.deviceID, localDate)
+}
+
 func (a *App) loadDeviceLiveStatus(ctx context.Context, deviceID string) (storage.Device, storage.Policy, deviceLiveStatus, error) {
-	device, storedPolicy, err := a.store.LoadDevice(ctx, deviceID)
+	return a.loadDeviceLiveStatusFrom(ctx, internalDeviceLiveStatusSource{store: a.store, deviceID: deviceID})
+}
+
+func (a *App) loadAdministrativeDeviceLiveStatus(ctx context.Context, device storage.FamilyDevice) (storage.Device, storage.Policy, deviceLiveStatus, error) {
+	return a.loadDeviceLiveStatusFrom(ctx, device)
+}
+
+func (a *App) loadDeviceLiveStatusFrom(ctx context.Context, source deviceLiveStatusSource) (storage.Device, storage.Policy, deviceLiveStatus, error) {
+	device, storedPolicy, err := source.Load(ctx)
 	if err != nil {
 		return storage.Device{}, storage.Policy{}, deviceLiveStatus{}, err
 	}
-	control, err := a.store.LoadControl(ctx, deviceID)
+	control, err := source.LoadControl(ctx)
 	if err != nil {
 		return storage.Device{}, storage.Policy{}, deviceLiveStatus{}, err
 	}
-	pendingControlKind, err := a.store.PendingControlKind(ctx, deviceID)
+	pendingControlKind, err := source.PendingControlKind(ctx)
 	if err != nil {
 		return storage.Device{}, storage.Policy{}, deviceLiveStatus{}, err
 	}
@@ -44,7 +90,7 @@ func (a *App) loadDeviceLiveStatus(ctx context.Context, deviceID string) (storag
 	localDate := now.Format("2006-01-02")
 	online := isOnline(device.LastSeenAt, now, a.onlineTimeout)
 	if online {
-		latestHeartbeatLocalDate, dateErr := a.store.LatestHeartbeatLocalDate(ctx, deviceID)
+		latestHeartbeatLocalDate, dateErr := source.LatestHeartbeatLocalDate(ctx)
 		if dateErr != nil {
 			return storage.Device{}, storage.Policy{}, deviceLiveStatus{}, dateErr
 		}
@@ -52,11 +98,11 @@ func (a *App) loadDeviceLiveStatus(ctx context.Context, deviceID string) (storag
 			localDate = latestHeartbeatLocalDate
 		}
 	}
-	summary, err := a.store.LoadDailySummary(ctx, deviceID, localDate)
+	summary, err := source.LoadDailySummary(ctx, localDate)
 	if err != nil {
 		return storage.Device{}, storage.Policy{}, deviceLiveStatus{}, err
 	}
-	unacknowledgedBonus, err := a.store.UnacknowledgedRemoteBonusSeconds(ctx, deviceID, localDate)
+	unacknowledgedBonus, err := source.UnacknowledgedRemoteBonusSeconds(ctx, localDate)
 	if err != nil {
 		return storage.Device{}, storage.Policy{}, deviceLiveStatus{}, err
 	}

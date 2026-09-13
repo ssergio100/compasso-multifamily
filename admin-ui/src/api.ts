@@ -99,7 +99,6 @@ class API {
   routine(id: string, routine: Omit<Routine, "id">, routineId?: string) { return this.request<{ id: string }>(`/api/v1/admin/devices/${id}/routines${routineId ? `/${routineId}` : ""}`, { method: routineId ? "PUT" : "POST", body: JSON.stringify(routine) }, true); }
   deleteRoutine(id: string, routineId: string) { return this.request(`/api/v1/admin/devices/${id}/routines/${routineId}`, { method: "DELETE" }, true); }
   communication(id: string, after = 0) { return this.request<CommunicationResponse>(`/api/v1/admin/devices/${id}/communication?limit=200${after ? `&after=${after}` : ""}`); }
-  setCommunicationRetention(id: string, retentionDays: number) { return this.request<{ retention_days: number }>(`/api/v1/admin/devices/${id}/communication/settings`, { method: "PUT", body: JSON.stringify({ retention_days: retentionDays }) }, true); }
   deleteCommunication(id: string) { return this.request<{ deleted: number }>(`/api/v1/admin/devices/${id}/communication`, { method: "DELETE" }, true); }
 }
 

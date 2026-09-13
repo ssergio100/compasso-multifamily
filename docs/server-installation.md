@@ -57,6 +57,21 @@ Uma atualização preserva `.env` e o banco externo ao diretório do pacote. A
 restauração exige confirmação textual e move os dados
 anteriores para o diretório de backups antes de recuperar o arquivo escolhido.
 
+### Suspender ou reativar uma família
+
+O operador pode usar o login do proprietário ou o ID interno da família. O
+comando altera apenas o banco compartilhado e termina; ele não inicia outra
+API. A suspensão invalida imediatamente as sessões existentes e a reativação
+exige novo login.
+
+```bash
+cd /opt/compasso-server
+sudo docker compose run --rm --no-deps compasso-api -suspend-family proprietario@exemplo.com
+sudo docker compose run --rm --no-deps compasso-api -reactivate-family proprietario@exemplo.com
+```
+
+Executar novamente a ação já aplicada é seguro e informa `changed=false`.
+
 ## Fronteira dos componentes
 
 - `compasso-api`: Go, API JSON e SQLite; não contém nem serve HTML.

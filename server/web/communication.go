@@ -15,7 +15,9 @@ import (
 // logging middleware. Only non-sensitive values are stored; the storage
 // validator rejects credential-like keys.
 type communicationDetails struct {
-	values map[string]string
+	values     map[string]string
+	authorized bool
+	device     storage.FamilyDevice
 }
 
 type communicationDetailsKey struct{}
@@ -28,6 +30,18 @@ func addCommunicationDetail(r *http.Request, key, value string) {
 	if details, ok := r.Context().Value(communicationDetailsKey{}).(*communicationDetails); ok {
 		details.values[key] = value
 	}
+}
+
+func markAdministrativeCommunicationAuthorized(r *http.Request, device storage.FamilyDevice) {
+	if details, ok := r.Context().Value(communicationDetailsKey{}).(*communicationDetails); ok {
+		details.authorized = true
+		details.device = device
+	}
+}
+
+func administrativeCommunicationAuthorized(r *http.Request) bool {
+	details, ok := r.Context().Value(communicationDetailsKey{}).(*communicationDetails)
+	return ok && details.authorized
 }
 
 func extraCommunicationDetails(r *http.Request) map[string]string {
@@ -65,7 +79,7 @@ func (w *statusCapturingResponseWriter) statusCode() int {
 
 func (a *App) logAdministrativeCommunication(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		deviceID, operation, route, shouldLog := administrativeCommunication(r)
+		_, operation, route, shouldLog := administrativeCommunication(r)
 		if !shouldLog {
 			next.ServeHTTP(w, r)
 			return
@@ -78,24 +92,31 @@ func (a *App) logAdministrativeCommunication(next http.Handler) http.Handler {
 		recorder := &statusCapturingResponseWriter{ResponseWriter: w}
 		wrapped := communicationDetailsContext(r)
 		next.ServeHTTP(recorder, wrapped)
+		if !administrativeCommunicationAuthorized(wrapped) {
+			return
+		}
 		status := recorder.statusCode()
-		details := map[string]string{
+		detailValues := map[string]string{
 			"correlation_id": correlationID,
 			"method":         r.Method,
 			"route":          route,
 		}
 		for key, value := range extraCommunicationDetails(wrapped) {
-			details[key] = value
+			detailValues[key] = value
 		}
-		stored, _ := a.store.AppendCommunicationLog(r.Context(), storage.CommunicationLog{
-			DeviceID: deviceID, Source: "interface", Target: "api", Operation: operation,
+		communicationContext, _ := wrapped.Context().Value(communicationDetailsKey{}).(*communicationDetails)
+		stored, err := communicationContext.device.AppendCommunicationLog(r.Context(), storage.CommunicationLog{
+			Source: "interface", Target: "api", Operation: operation,
 			Result: communicationResultForStatus(status), HTTPStatus: status,
 			DurationMS: elapsedMilliseconds(started), Summary: administrativeCommunicationSummary(operation, status),
-			Details: details,
+			Details: detailValues,
 		}, a.now())
-		a.publishCommunicationLog(deviceID, stored)
+		if err != nil {
+			return
+		}
+		a.publishAdministrativeCommunicationLog(communicationContext.device, stored)
 		if r.Method != http.MethodGet && status >= http.StatusOK && status < http.StatusMultipleChoices {
-			a.publishActivitiesChanged(deviceID)
+			a.publishAdministrativeActivitiesChanged(communicationContext.device)
 		}
 	})
 }
@@ -162,13 +183,9 @@ func (a *App) adminDeviceCommunicationAPI(
 	w http.ResponseWriter,
 	r *http.Request,
 	current session,
-	deviceID string,
+	device storage.FamilyDevice,
 	pathParts []string,
 ) {
-	if len(pathParts) == 1 && pathParts[0] == "settings" {
-		a.adminCommunicationSettingsAPI(w, r, current)
-		return
-	}
 	if len(pathParts) != 0 {
 		writeJSONError(w, http.StatusNotFound, "not found")
 		return
@@ -179,7 +196,7 @@ func (a *App) adminDeviceCommunicationAPI(
 		if !ok {
 			return
 		}
-		events, err := a.store.ListCommunicationLogs(r.Context(), deviceID, afterID, limit)
+		events, err := device.ListCommunicationLogs(r.Context(), afterID, limit)
 		if !writeAdminReadError(w, err) {
 			return
 		}
@@ -195,7 +212,7 @@ func (a *App) adminDeviceCommunicationAPI(
 		if !requireAdminCSRF(w, r, current) {
 			return
 		}
-		deleted, err := a.store.DeleteCommunicationLogs(r.Context(), deviceID)
+		deleted, err := device.DeleteCommunicationLogs(r.Context())
 		if !writeAdminReadError(w, err) {
 			return
 		}
@@ -204,27 +221,6 @@ func (a *App) adminDeviceCommunicationAPI(
 		w.Header().Set("Allow", "GET, DELETE")
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
-}
-
-func (a *App) adminCommunicationSettingsAPI(w http.ResponseWriter, r *http.Request, current session) {
-	if r.Method != http.MethodPut {
-		w.Header().Set("Allow", http.MethodPut)
-		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if !requireAdminCSRF(w, r, current) {
-		return
-	}
-	var request updateCommunicationRetentionRequest
-	if err := decodeJSONBody(w, r, &request); err != nil || request.RetentionDays < 1 || request.RetentionDays > 365 {
-		writeJSONError(w, http.StatusBadRequest, "retention must be between 1 and 365 days")
-		return
-	}
-	if err := a.store.SetCommunicationRetentionDays(r.Context(), request.RetentionDays, a.now()); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid communication retention")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]int{"retention_days": request.RetentionDays})
 }
 
 func communicationQuery(w http.ResponseWriter, r *http.Request) (limit int, afterID int64, ok bool) {

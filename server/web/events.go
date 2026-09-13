@@ -76,13 +76,13 @@ func (h *eventHub) hasSubscribers(deviceID string) bool {
 // on every heartbeat and a "device_offline" snapshot when the online timeout
 // expires. The admin session is validated when the stream is opened and on
 // every keep-alive.
-func (a *App) adminDeviceStreamAPI(w http.ResponseWriter, r *http.Request, deviceID string) {
+func (a *App) adminDeviceStreamAPI(w http.ResponseWriter, r *http.Request, device storage.FamilyDevice) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	_, _, liveStatus, err := a.loadDeviceLiveStatus(r.Context(), deviceID)
+	_, _, liveStatus, err := a.loadAdministrativeDeviceLiveStatus(r.Context(), device)
 	if !writeAdminReadError(w, err) {
 		return
 	}
@@ -94,7 +94,7 @@ func (a *App) adminDeviceStreamAPI(w http.ResponseWriter, r *http.Request, devic
 		writeJSONError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
-	events, unsubscribe := a.hub.subscribe(deviceID)
+	events, unsubscribe := a.hub.subscribe(device.ID())
 	defer unsubscribe()
 	if err := a.writeStreamSnapshot(w, flusher, "hello", liveStatus); err != nil {
 		return
@@ -162,11 +162,33 @@ func (a *App) publishCommunicationLog(deviceID string, log storage.Communication
 	a.hub.publish(deviceID, streamEvent{Name: "communication", Data: data})
 }
 
+func (a *App) publishAdministrativeCommunicationLog(device storage.FamilyDevice, log storage.CommunicationLog) {
+	if !a.hub.hasSubscribers(device.ID()) {
+		return
+	}
+	data, err := json.Marshal(log)
+	if err != nil {
+		return
+	}
+	a.hub.publish(device.ID(), streamEvent{Name: "communication", Data: data})
+}
+
 func (a *App) publishDeviceActivity(deviceID, activityID string) {
 	if !a.hub.hasSubscribers(deviceID) {
 		return
 	}
 	activity, err := a.store.LoadDeviceActivity(context.Background(), deviceID, activityID)
+	if err != nil {
+		return
+	}
+	a.publishActivity(activity)
+}
+
+func (a *App) publishAdministrativeDeviceActivity(device storage.FamilyDevice, activityID string) {
+	if !a.hub.hasSubscribers(device.ID()) {
+		return
+	}
+	activity, err := device.LoadActivity(context.Background(), activityID)
 	if err != nil {
 		return
 	}
@@ -197,6 +219,17 @@ func (a *App) publishActivitiesChanged(deviceID string) {
 		return
 	}
 	a.hub.publish(deviceID, streamEvent{Name: "activities_changed", Data: data})
+}
+
+func (a *App) publishAdministrativeActivitiesChanged(device storage.FamilyDevice) {
+	if !a.hub.hasSubscribers(device.ID()) {
+		return
+	}
+	data, err := json.Marshal(map[string]string{"device_id": device.ID()})
+	if err != nil {
+		return
+	}
+	a.hub.publish(device.ID(), streamEvent{Name: "activities_changed", Data: data})
 }
 
 // StartOfflineDetector publishes "device_offline" when the online timeout

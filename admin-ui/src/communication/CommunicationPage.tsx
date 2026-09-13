@@ -16,7 +16,6 @@ type ActivityFilter = "all" | "pending" | "completed";
 type PartyFilter = "all" | CommunicationParty;
 type ResultFilter = "all" | CommunicationResult;
 
-const retentionOptions = [1, 7, 15, 30, 60, 90];
 const partyNames: Record<CommunicationParty, string> = {
   agent: "Agente", api: "Servidor", interface: "Interface",
 };
@@ -319,16 +318,6 @@ export function CommunicationPage({
     });
   }, [events, party, result, search]);
 
-  const saveRetention = async (days: number) => {
-    const previous = retentionDays;
-    setRetentionDays(days);
-    try {
-      if (remoteMode) await api.setCommunicationRetention(deviceId, days);
-    } catch (saveError) {
-      setRetentionDays(previous);
-      setError(saveError instanceof Error ? saveError.message : "Não foi possível salvar a retenção.");
-    }
-  };
   const deleteLogs = async () => {
     setBusy(true);
     try {
@@ -387,9 +376,7 @@ export function CommunicationPage({
         <label><span className="sr-only">Resultado</span><select value={result} onChange={(event) => setResult(event.target.value as ResultFilter)}>
           <option value="all">Todos os resultados</option><option value="success">Concluídos</option><option value="warning">Com atenção</option><option value="error">Com falha</option>
         </select></label>
-        <label><span className="sr-only">Retenção</span><select aria-label="Retenção do diagnóstico" value={retentionDays} onChange={(event) => void saveRetention(Number(event.target.value))}>
-          {retentionOptions.map((days) => <option key={days} value={days}>Manter por {days} {days === 1 ? "dia" : "dias"}</option>)}
-        </select></label>
+        <span className="retention-note">Retenção: {retentionDays} {retentionDays === 1 ? "dia" : "dias"}</span>
         <button className="delete-logs" onClick={() => setConfirmDelete(true)}><Trash2 size={17} />Excluir diagnóstico</button>
       </>}
     </div>
