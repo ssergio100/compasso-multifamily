@@ -13,7 +13,10 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-var ErrNotFound = errors.New("record not found")
+var (
+	ErrNotFound    = errors.New("record not found")
+	ErrDeviceLimit = errors.New("family device limit reached")
+)
 
 type Store struct{ db *sql.DB }
 

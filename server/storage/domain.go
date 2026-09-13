@@ -13,10 +13,13 @@ import (
 )
 
 type Admin struct {
-	ID           string
-	Login        string
-	PasswordHash string
-	Active       bool
+	ID             string
+	Login          string
+	PasswordHash   string
+	Active         bool
+	FamilyID       string
+	FamilyState    string
+	AuthGeneration int64
 }
 
 type Device struct {
@@ -162,6 +165,16 @@ func (s *Store) BootstrapAdmin(ctx context.Context, login, passwordHash string, 
 	if err != nil {
 		return false, fmt.Errorf("bootstrap administrator: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO family(id, name, state, created_at, updated_at)
+		VALUES (?, 'Família', 'active', ?, ?)`, id, formatTime(now), formatTime(now)); err != nil {
+		return false, fmt.Errorf("bootstrap family: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO family_member(family_id, admin_user_id, role, created_at)
+		VALUES (?, ?, 'owner', ?)`, id, id, formatTime(now)); err != nil {
+		return false, fmt.Errorf("bootstrap family owner: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit administrator setup: %w", err)
 	}
@@ -180,8 +193,12 @@ func (s *Store) AdminByLogin(ctx context.Context, login string) (Admin, error) {
 	var admin Admin
 	var active int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, login, password_hash, active FROM admin_user WHERE login = ?`, strings.TrimSpace(login),
-	).Scan(&admin.ID, &admin.Login, &admin.PasswordHash, &active)
+		`SELECT u.id, u.login, u.password_hash, u.active, m.family_id, f.state, u.auth_generation
+		 FROM admin_user u
+		 JOIN family_member m ON m.admin_user_id=u.id AND m.role='owner'
+		 JOIN family f ON f.id=m.family_id
+		 WHERE u.login = ?`, strings.TrimSpace(login),
+	).Scan(&admin.ID, &admin.Login, &admin.PasswordHash, &active, &admin.FamilyID, &admin.FamilyState, &admin.AuthGeneration)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Admin{}, ErrNotFound
 	}
@@ -193,15 +210,41 @@ func (s *Store) AdminByLogin(ctx context.Context, login string) (Admin, error) {
 }
 
 func (s *Store) CreateDevice(ctx context.Context, name string, now time.Time) (Device, error) {
-	return s.CreateDeviceWithAvatar(ctx, name, DefaultAvatarKey, now)
+	familyID, err := s.soleFamilyID(ctx)
+	if err != nil {
+		return Device{}, err
+	}
+	return s.CreateDeviceForFamily(ctx, familyID, name, DefaultAvatarKey, now)
 }
 
 func (s *Store) CreateDeviceWithAvatar(ctx context.Context, name, avatarKey string, now time.Time) (Device, error) {
+	familyID, err := s.soleFamilyID(ctx)
+	if err != nil {
+		return Device{}, err
+	}
+	return s.CreateDeviceForFamily(ctx, familyID, name, avatarKey, now)
+}
+
+func (s *Store) soleFamilyID(ctx context.Context) (string, error) {
+	var familyID string
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT id FROM family WHERE state='active'
+		AND (SELECT COUNT(*) FROM family WHERE state='active')=1`,
+	).Scan(&familyID); errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	} else if err != nil {
+		return "", err
+	}
+	return familyID, nil
+}
+
+func (s *Store) CreateDeviceForFamily(ctx context.Context, familyID, name, avatarKey string, now time.Time) (Device, error) {
+	familyID = strings.TrimSpace(familyID)
 	name = strings.TrimSpace(name)
 	if avatarKey == "" {
 		avatarKey = DefaultAvatarKey
 	}
-	if name == "" || len(name) > 80 || !ValidAvatarKey(avatarKey) || now.IsZero() {
+	if familyID == "" || name == "" || len(name) > 80 || !ValidAvatarKey(avatarKey) || now.IsZero() {
 		return Device{}, errors.New("device requires a name of at most 80 characters and current time")
 	}
 	id, err := newID()
@@ -213,10 +256,27 @@ func (s *Store) CreateDeviceWithAvatar(ctx context.Context, name, avatarKey stri
 		return Device{}, err
 	}
 	defer tx.Rollback()
+	var familyState string
+	var deviceCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT f.state, COUNT(d.id)
+		FROM family f LEFT JOIN device d ON d.family_id=f.id
+		WHERE f.id=? GROUP BY f.id`, familyID,
+	).Scan(&familyState, &deviceCount); errors.Is(err, sql.ErrNoRows) {
+		return Device{}, ErrNotFound
+	} else if err != nil {
+		return Device{}, err
+	}
+	if familyState != "active" {
+		return Device{}, ErrNotFound
+	}
+	if deviceCount >= 5 {
+		return Device{}, ErrDeviceLimit
+	}
 	stamp := formatTime(now)
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO device(id, name, avatar_key, device_token_hash, policy_revision, created_at, updated_at)
-		VALUES (?, ?, ?, '', 1, ?, ?)`, id, name, avatarKey, stamp, stamp); err != nil {
+		INSERT INTO device(id, family_id, name, avatar_key, device_token_hash, policy_revision, created_at, updated_at)
+		VALUES (?, ?, ?, ?, '', 1, ?, ?)`, id, familyID, name, avatarKey, stamp, stamp); err != nil {
 		return Device{}, fmt.Errorf("create device: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `

@@ -5,9 +5,138 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestMigrationFifteenBackfillsSingleFamily(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "server.db")
+	db := openDatabaseAtMigrationFourteen(t, databasePath)
+	stamp := "2026-09-13T12:00:00Z"
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO admin_user(id, login, password_hash, active, created_at, updated_at)
+		VALUES ('admin-1', 'admin', 'hash', 1, ?, ?);
+		INSERT INTO device(id, name, device_token_hash, policy_revision, created_at, updated_at)
+		VALUES ('device-1', 'Computador', 'token-hash', 1, ?, ?);
+	`, stamp, stamp, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var familyID, familyName, familyState string
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT id, name, state FROM family`,
+	).Scan(&familyID, &familyName, &familyState); err != nil {
+		t.Fatal(err)
+	}
+	if familyID != "admin-1" || familyName != "Família" || familyState != "active" {
+		t.Fatalf("family id=%q name=%q state=%q", familyID, familyName, familyState)
+	}
+	var memberFamilyID, deviceFamilyID string
+	var generation int
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT family_id FROM family_member WHERE admin_user_id='admin-1'`,
+	).Scan(&memberFamilyID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT family_id, credential_generation FROM device WHERE id='device-1'`,
+	).Scan(&deviceFamilyID, &generation); err != nil {
+		t.Fatal(err)
+	}
+	if memberFamilyID != familyID || deviceFamilyID != familyID || generation != 1 {
+		t.Fatalf("member family=%q device family=%q generation=%d", memberFamilyID, deviceFamilyID, generation)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO device(id, name, device_token_hash, policy_revision, created_at, updated_at)
+		VALUES ('orphan', 'Órfão', '', 1, ?, ?)
+	`, stamp, stamp); err == nil || !strings.Contains(err.Error(), "family_id is required") {
+		t.Fatalf("orphan insert error=%v", err)
+	}
+}
+
+func TestMigrationFifteenKeepsFreshDatabaseEmpty(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "server.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var families, members, devices int
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT (SELECT COUNT(*) FROM family),
+		       (SELECT COUNT(*) FROM family_member),
+		       (SELECT COUNT(*) FROM device)
+	`).Scan(&families, &members, &devices); err != nil {
+		t.Fatal(err)
+	}
+	if families != 0 || members != 0 || devices != 0 {
+		t.Fatalf("families=%d members=%d devices=%d", families, members, devices)
+	}
+}
+
+func TestMigrationFifteenRejectsAmbiguousAdministrators(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "server.db")
+	db := openDatabaseAtMigrationFourteen(t, databasePath)
+	stamp := "2026-09-13T12:00:00Z"
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO admin_user(id, login, password_hash, active, created_at, updated_at)
+		VALUES
+			('admin-1', 'one', 'hash', 1, ?, ?),
+			('admin-2', 'two', 'hash', 1, ?, ?)
+	`, stamp, stamp, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(ctx, databasePath)
+	if store != nil {
+		_ = store.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "0015_multi_family.sql") {
+		t.Fatalf("migration error=%v", err)
+	}
+}
+
+func openDatabaseAtMigrationFourteen(t *testing.T, databasePath string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite3", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := migrationFiles.ReadDir("migrations")
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), "0015_") {
+			continue
+		}
+		script, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			_ = db.Close()
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(script)); err != nil {
+			_ = db.Close()
+			t.Fatalf("apply %s: %v", entry.Name(), err)
+		}
+	}
+	return db
+}
 
 func TestMigrationElevenAddsAndBackfillsVisualIdentities(t *testing.T) {
 	ctx := context.Background()
@@ -22,7 +151,7 @@ func TestMigrationElevenAddsAndBackfillsVisualIdentities(t *testing.T) {
 		CREATE TABLE routine (id TEXT PRIMARY KEY, device_id TEXT NOT NULL, name TEXT NOT NULL);
 		-- This focused fixture exercises migration 11 only. Version 12 depends on
 		-- the complete command/activity schema built by the earlier migrations.
-		INSERT INTO schema_migrations(version) VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(12);
+		INSERT INTO schema_migrations(version) VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(12),(15);
 		INSERT INTO device(id,name) VALUES ('device-1','PC antigo');
 		INSERT INTO routine(id,device_id,name) VALUES ('sleep','device-1','Hora de dormir'),('reading','device-1','Leitura');
 	`); err != nil {
@@ -61,6 +190,7 @@ func TestMigrationThirteenPreservesExistingAvatarAndAcceptsSecondCollection(t *t
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
+	bootstrapTestOwner(t, store, now)
 	existing, err := store.CreateDeviceWithAvatar(ctx, "Avatar antigo", "cat_bow", now)
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +246,7 @@ func TestMigrationFourteenAddsChickToAnExistingCollection(t *testing.T) {
 			))
 		);
 		INSERT INTO schema_migrations(version)
-		VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12),(13);
+		VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12),(13),(15);
 		INSERT INTO device(id, name, avatar_key)
 		VALUES ('existing-device', 'Avatar existente', 'cat_bow');
 		PRAGMA user_version=13;
@@ -154,6 +284,7 @@ func TestMigrationTwelveCompactsControlQueueAndNormalizesState(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
+	bootstrapTestOwner(t, store, now)
 	device, err := store.CreateDevice(ctx, "Trabalho", now)
 	if err != nil {
 		t.Fatal(err)
@@ -249,6 +380,7 @@ func TestMigrationNineRepairsActivitySchemaRecordedButMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.August, 24, 3, 0, 0, 0, time.UTC)
+	bootstrapTestOwner(t, store, now)
 	device, err := store.CreateDevice(ctx, "Servidor parcialmente migrado", now)
 	if err != nil {
 		t.Fatal(err)
@@ -296,6 +428,7 @@ func TestMigrationTenBackfillsExistingAdministrativeAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.August, 24, 3, 0, 0, 0, time.UTC)
+	bootstrapTestOwner(t, store, now)
 	device, err := store.CreateDevice(ctx, "Zorin", now)
 	if err != nil {
 		t.Fatal(err)

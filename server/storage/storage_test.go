@@ -10,7 +10,7 @@ import (
 
 func TestAdministrativePolicyLifecycle(t *testing.T) {
 	ctx := context.Background()
-	store := openTestStore(t)
+	store := openEmptyTestStore(t)
 	defer store.Close()
 	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
 
@@ -135,9 +135,25 @@ func TestRoutinesOverlap(t *testing.T) {
 
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
+	store := openEmptyTestStore(t)
+	bootstrapTestOwner(t, store, time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
+	return store
+}
+
+func openEmptyTestStore(t *testing.T) *Store {
+	t.Helper()
 	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "server.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return store
+}
+
+func bootstrapTestOwner(t *testing.T, store *Store, now time.Time) {
+	t.Helper()
+	created, err := store.BootstrapAdmin(context.Background(), "test-owner", "test-hash", now)
+	if err != nil || !created {
+		_ = store.Close()
+		t.Fatalf("bootstrap test owner created=%t err=%v", created, err)
+	}
 }
