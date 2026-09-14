@@ -33,6 +33,7 @@ func (a *App) heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	recorder := &statusCapturingResponseWriter{ResponseWriter: w}
 	a.handleHeartbeat(recorder, r, details)
+	a.metrics.record(recorder.statusCode(), time.Since(started))
 	if deviceID == "" {
 		return
 	}
@@ -45,12 +46,14 @@ func (a *App) heartbeat(w http.ResponseWriter, r *http.Request) {
 			summary = "O servidor recusou a atualização enviada pelo computador."
 		}
 	}
-	heartbeatLog, _ := a.store.AppendCommunicationLog(r.Context(), storage.CommunicationLog{
-		DeviceID: deviceID, Source: "agent", Target: "api", Operation: "heartbeat",
-		Result: result, HTTPStatus: status, DurationMS: elapsedMilliseconds(started), Summary: summary,
-		Details: details,
-	}, a.now())
-	a.publishCommunicationLog(deviceID, heartbeatLog)
+	if details["authenticated"] == "true" && (status >= 400 || heartbeatCarriedState(details)) {
+		heartbeatLog, _ := a.store.AppendCommunicationLog(r.Context(), storage.CommunicationLog{
+			DeviceID: deviceID, Source: "agent", Target: "api", Operation: "heartbeat",
+			Result: result, HTTPStatus: status, DurationMS: elapsedMilliseconds(started), Summary: summary,
+			Details: details,
+		}, a.now())
+		a.publishCommunicationLog(deviceID, heartbeatLog)
+	}
 	if status == http.StatusOK && heartbeatCarriedState(details) {
 		responseLog, _ := a.store.AppendCommunicationLog(r.Context(), storage.CommunicationLog{
 			DeviceID: deviceID, Source: "api", Target: "agent", Operation: "heartbeat_response",
@@ -67,17 +70,28 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request, details ma
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if !a.rateLimits.takeBucket("heartbeat:global", 50, 50, a.now()) {
+		writeHeartbeatRateLimit(w)
+		return
+	}
 	deviceID := strings.TrimSpace(r.Header.Get(deviceIDHeader))
 	authorization := r.Header.Get("Authorization")
 	ok := strings.HasPrefix(authorization, "Bearer ")
 	token := strings.TrimPrefix(authorization, "Bearer ")
 	if !ok || strings.ContainsAny(token, " \t\r\n") {
+		if !a.rateLimits.takeBucket("heartbeat:invalid:"+requestNetwork(r), 10, 20, a.now()) {
+			writeHeartbeatRateLimit(w)
+			return
+		}
 		w.Header().Set("WWW-Authenticate", "Bearer")
-		writeJSONError(w, http.StatusUnauthorized, "invalid device credentials")
+		writeJSONErrorResponse(w, http.StatusUnauthorized, protocol.ErrorResponse{
+			Error: "invalid device credentials", Code: "invalid_device_credentials",
+		})
 		return
 	}
 	if err := a.store.AuthenticateDevice(r.Context(), deviceID, token); err != nil {
 		if errors.Is(err, storage.ErrFamilySuspended) {
+			details["authenticated"] = "true"
 			details["rejection_reason"] = "A família deste computador está suspensa."
 			details["failure_stage"] = "autorizacao_da_familia"
 			writeJSONErrorResponse(w, http.StatusForbidden, protocol.ErrorResponse{
@@ -85,10 +99,17 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request, details ma
 			})
 			return
 		}
+		if !a.rateLimits.takeBucket("heartbeat:invalid:"+requestNetwork(r), 10, 20, a.now()) {
+			writeHeartbeatRateLimit(w)
+			return
+		}
 		w.Header().Set("WWW-Authenticate", "Bearer")
-		writeJSONError(w, http.StatusUnauthorized, "invalid device credentials")
+		writeJSONErrorResponse(w, http.StatusUnauthorized, protocol.ErrorResponse{
+			Error: "invalid device credentials", Code: "invalid_device_credentials",
+		})
 		return
 	}
+	details["authenticated"] = "true"
 	protocolVersion := strings.TrimSpace(r.Header.Get(protocol.VersionHeader))
 	if protocolVersion == "" {
 		protocolVersion = "1"
@@ -96,6 +117,37 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request, details ma
 	if protocolVersion != "1" && protocolVersion != protocol.CurrentProtocolVersion {
 		writeJSONError(w, http.StatusBadRequest, "unsupported protocol version")
 		return
+	}
+	hasInstallationIdentity := requestHasCapability(r, protocol.InstallationIdentityCapability)
+	if a.requireInstallationIdentity && !hasInstallationIdentity {
+		writeJSONErrorResponse(w, http.StatusUpgradeRequired, protocol.ErrorResponse{
+			Error: "agent update required", Code: "agent_upgrade_required",
+		})
+		return
+	}
+	installationID := ""
+	if hasInstallationIdentity {
+		installationID = strings.TrimSpace(r.Header.Get(protocol.InstallationIDHeader))
+		if !protocol.ValidInstallationID(installationID) {
+			writeJSONErrorResponse(w, http.StatusBadRequest, protocol.ErrorResponse{
+				Error: "invalid installation identity", Code: "invalid_installation_identity",
+			})
+			return
+		}
+		if err := a.store.CheckDeviceInstallation(r.Context(), deviceID, installationID); err != nil {
+			if errors.Is(err, storage.ErrInstallationConflict) {
+				writeJSONErrorResponse(w, http.StatusConflict, protocol.ErrorResponse{
+					Error: "another installation is active", Code: "installation_conflict",
+				})
+				return
+			}
+			writeJSONError(w, http.StatusBadRequest, "invalid installation identity")
+			return
+		}
+		if a.requireInstallationIdentity && !a.rateLimits.takeBucket("heartbeat:device:"+deviceID, 1, 2, a.now()) {
+			writeHeartbeatRateLimit(w)
+			return
+		}
 	}
 	if protocolVersion == "1" {
 		pendingBonus, err := a.store.HasPendingRemoteBonus(r.Context(), deviceID)
@@ -130,7 +182,19 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request, details ma
 	details["request_events"] = strconv.Itoa(len(request.Events))
 	details["command_acknowledgements"] = strconv.Itoa(len(request.CommandAcks))
 	heartbeatNow := a.now()
-	response, err := a.store.ReceiveHeartbeat(r.Context(), deviceID, request, heartbeatNow)
+	nextInterval := a.heartbeatInterval
+	if hasInstallationIdentity {
+		nextInterval = adaptiveHeartbeatInterval(request.GraphicalSessionActive)
+	}
+	var response protocol.HeartbeatResponse
+	var err error
+	if installationID == "" {
+		response, err = a.store.ReceiveHeartbeat(r.Context(), deviceID, request, heartbeatNow)
+	} else {
+		response, err = a.store.ReceiveHeartbeatForInstallation(
+			r.Context(), deviceID, installationID, nextInterval, request, heartbeatNow,
+		)
+	}
 	if err != nil {
 		details["rejection_reason"] = humanHeartbeatRejection(err)
 		details["failure_stage"] = "processamento_no_servidor"
@@ -148,11 +212,17 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request, details ma
 			})
 			return
 		}
+		if errors.Is(err, storage.ErrInstallationConflict) {
+			writeJSONErrorResponse(w, http.StatusConflict, protocol.ErrorResponse{
+				Error: "another installation is active", Code: "installation_conflict",
+			})
+			return
+		}
 		writeJSONError(w, status, "heartbeat rejected")
 		return
 	}
 	if requestHasCapability(r, protocol.NextHeartbeatCapability) {
-		response.NextHeartbeatSeconds = int64(a.heartbeatInterval / time.Second)
+		response.NextHeartbeatSeconds = int64(nextInterval / time.Second)
 		details["next_heartbeat_seconds"] = strconv.FormatInt(response.NextHeartbeatSeconds, 10)
 	}
 	if !requestHasCapability(r, protocol.CommandAckReceiptCapability) {
@@ -164,7 +234,7 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request, details ma
 	details["session_state_sent"] = strconv.FormatBool(response.SessionState != nil)
 	details["response_commands"] = strconv.Itoa(len(response.Commands))
 	details["acknowledged_events"] = strconv.Itoa(len(response.AcknowledgedEvents))
-	a.publishDeviceStatus(deviceID, "status")
+	a.publishHeartbeatDeviceStatus(deviceID, heartbeatNow)
 	for _, command := range response.Commands {
 		a.publishDeviceActivity(deviceID, command.ID)
 	}
@@ -177,6 +247,20 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request, details ma
 		}
 	}
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+func writeHeartbeatRateLimit(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	writeJSONErrorResponse(w, http.StatusTooManyRequests, protocol.ErrorResponse{
+		Error: "heartbeat rate limited", Code: "rate_limited",
+	})
+}
+
+func adaptiveHeartbeatInterval(graphicalSessionActive bool) time.Duration {
+	if graphicalSessionActive {
+		return 5 * time.Second
+	}
+	return 30 * time.Second
 }
 
 func requestHasCapability(r *http.Request, capability string) bool {

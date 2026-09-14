@@ -862,9 +862,21 @@ func TestHeartbeatRequiresDeviceCredential(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("valid token status=%d body=%s", response.Code, response.Body.String())
 	}
+	unchangedPayload, _ := json.Marshal(protocol.HeartbeatRequest{
+		PolicyRevision: device.PolicyRevision, LocalDate: fixture.now.Format("2006-01-02"),
+	})
+	request = httptest.NewRequest(http.MethodPost, protocol.HeartbeatPath, bytes.NewReader(unchangedPayload))
+	request.Header.Set(deviceIDHeader, device.ID)
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set(protocol.VersionHeader, protocol.CurrentProtocolVersion)
+	response = httptest.NewRecorder()
+	fixture.app.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unchanged heartbeat status=%d body=%s", response.Code, response.Body.String())
+	}
 	logs, err := fixture.store.ListCommunicationLogs(context.Background(), device.ID, 0, 10)
-	if err != nil || len(logs) != 3 || logs[0].Source != "api" || logs[0].Target != "agent" ||
-		logs[1].Source != "agent" || logs[1].Result != "success" || logs[2].Result != "warning" {
+	if err != nil || len(logs) != 2 || logs[0].Source != "api" || logs[0].Target != "agent" ||
+		logs[1].Source != "agent" || logs[1].Result != "success" {
 		t.Fatalf("heartbeat communication logs=%+v err=%v", logs, err)
 	}
 	for _, event := range logs {
@@ -873,9 +885,85 @@ func TestHeartbeatRequiresDeviceCredential(t *testing.T) {
 			t.Fatalf("communication log exposed credential: %s", encoded)
 		}
 	}
+	metricsRequest := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsResponse := httptest.NewRecorder()
+	fixture.app.ServeHTTP(metricsResponse, metricsRequest)
+	metrics := metricsResponse.Body.String()
+	if metricsResponse.Code != http.StatusOK ||
+		!strings.Contains(metrics, `compasso_heartbeats_total{result="accepted"} 2`) ||
+		!strings.Contains(metrics, `compasso_heartbeats_total{result="rejected"} 1`) ||
+		!strings.Contains(metrics, "compasso_heartbeat_duration_seconds_count 3") {
+		t.Fatalf("heartbeat metrics status=%d body=%s", metricsResponse.Code, metrics)
+	}
 }
 
-func TestHeartbeatIntervalIsSentOnlyToCapableAgentsAndChangesGlobally(t *testing.T) {
+func TestHeartbeatInstallationIdentityNegotiationAndConflict(t *testing.T) {
+	fixture := newWebFixture(t, false, time.Hour)
+	defer fixture.store.Close()
+	fixture.app.requireInstallationIdentity = true
+	device, err := fixture.store.CreateDevice(context.Background(), "Identidade", fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := fixture.store.IssueDeviceToken(context.Background(), device.ID, fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validPayload, _ := json.Marshal(protocol.HeartbeatRequest{LocalDate: "2026-08-10"})
+	requestHeartbeat := func(installationID, capabilities string, payload []byte) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, protocol.HeartbeatPath, bytes.NewReader(payload))
+		request.Header.Set(deviceIDHeader, device.ID)
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set(protocol.VersionHeader, protocol.CurrentProtocolVersion)
+		if installationID != "" {
+			request.Header.Set(protocol.InstallationIDHeader, installationID)
+		}
+		if capabilities != "" {
+			request.Header.Set(protocol.CapabilitiesHeader, capabilities)
+		}
+		response := httptest.NewRecorder()
+		fixture.app.ServeHTTP(response, request)
+		return response
+	}
+	missing := requestHeartbeat("", protocol.NextHeartbeatCapability, validPayload)
+	if missing.Code != http.StatusUpgradeRequired || !strings.Contains(missing.Body.String(), `"code":"agent_upgrade_required"`) {
+		t.Fatalf("missing identity status=%d body=%s", missing.Code, missing.Body.String())
+	}
+	invalid := requestHeartbeat("invalid", protocol.InstallationIdentityCapability, validPayload)
+	if invalid.Code != http.StatusBadRequest || !strings.Contains(invalid.Body.String(), `"code":"invalid_installation_identity"`) {
+		t.Fatalf("invalid identity status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+	const firstInstallation = "79e78a4f-713b-4e19-a756-b60a0505248a"
+	capabilities := protocol.InstallationIdentityCapability + ", " + protocol.NextHeartbeatCapability
+	first := requestHeartbeat(firstInstallation, capabilities, validPayload)
+	var heartbeat protocol.HeartbeatResponse
+	decodeResponse(t, first, &heartbeat)
+	if first.Code != http.StatusOK || heartbeat.NextHeartbeatSeconds != 30 {
+		t.Fatalf("first binding status=%d heartbeat=%+v body=%s", first.Code, heartbeat, first.Body.String())
+	}
+	conflict := requestHeartbeat("1c5b1779-953c-4ebd-8022-a9b6b99c243e", capabilities, []byte(`not-json`))
+	if conflict.Code != http.StatusConflict || !strings.Contains(conflict.Body.String(), `"code":"installation_conflict"`) {
+		t.Fatalf("installation conflict status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	activePayload, _ := json.Marshal(protocol.HeartbeatRequest{
+		LocalDate: "2026-08-10", GraphicalSessionActive: true, GraphicalSessionID: "session-1", RequestSessionState: true,
+	})
+	active := requestHeartbeat(firstInstallation, capabilities, activePayload)
+	decodeResponse(t, active, &heartbeat)
+	if active.Code != http.StatusOK || heartbeat.NextHeartbeatSeconds != 5 {
+		t.Fatalf("active interval status=%d heartbeat=%+v body=%s", active.Code, heartbeat, active.Body.String())
+	}
+	limited := requestHeartbeat(firstInstallation, capabilities, validPayload)
+	if limited.Code != http.StatusTooManyRequests || limited.Header().Get("Retry-After") != "1" || !strings.Contains(limited.Body.String(), `"code":"rate_limited"`) {
+		t.Fatalf("device rate limit status=%d headers=%v body=%s", limited.Code, limited.Header(), limited.Body.String())
+	}
+	fixture.app.now = func() time.Time { return fixture.now.Add(time.Second) }
+	if recovered := requestHeartbeat(firstInstallation, capabilities, validPayload); recovered.Code != http.StatusOK {
+		t.Fatalf("device rate limit did not refill status=%d body=%s", recovered.Code, recovered.Body.String())
+	}
+}
+
+func TestLegacyHeartbeatIntervalRemainsConfigurableDuringAgentRollout(t *testing.T) {
 	fixture := newWebFixture(t, false, time.Hour)
 	defer fixture.store.Close()
 	device, err := fixture.store.CreateDevice(context.Background(), "Interval negotiation", fixture.now)
@@ -918,7 +1006,7 @@ func TestHeartbeatIntervalIsSentOnlyToCapableAgentsAndChangesGlobally(t *testing
 	var heartbeatResponse protocol.HeartbeatResponse
 	decodeResponse(t, capableResponse, &heartbeatResponse)
 	if heartbeatResponse.NextHeartbeatSeconds != 9 {
-		t.Fatalf("next heartbeat seconds=%d, want updated global value", heartbeatResponse.NextHeartbeatSeconds)
+		t.Fatalf("next heartbeat seconds=%d, want rollout fallback", heartbeatResponse.NextHeartbeatSeconds)
 	}
 
 	operationID, err := fixture.store.QueueControlOperation(context.Background(), device.ID, "block_now", fixture.now)

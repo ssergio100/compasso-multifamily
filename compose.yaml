@@ -22,6 +22,7 @@ services:
       TEMPO_SMTP_USERNAME: ${COMPASSO_SMTP_USERNAME:-}
       TEMPO_SMTP_PASSWORD: ${COMPASSO_SMTP_PASSWORD:-}
       TEMPO_SMTP_FROM: ${COMPASSO_SMTP_FROM:-}
+      TEMPO_REQUIRE_INSTALLATION_IDENTITY: ${COMPASSO_REQUIRE_INSTALLATION_IDENTITY:-false}
     volumes:
       - type: bind
         source: ${COMPASSO_DATA_DIRECTORY:-/srv/docker/volumes/compasso}/server

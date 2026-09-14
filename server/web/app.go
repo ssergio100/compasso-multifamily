@@ -20,17 +20,19 @@ const (
 )
 
 type App struct {
-	store             *storage.Store
-	sessions          *sessionStore
-	secureCookies     bool
-	onlineTimeout     time.Duration
-	heartbeatInterval time.Duration
-	adminOrigin       string
-	now               func() time.Time
-	handler           http.Handler
-	hub               *eventHub
-	accountMailer     AccountMailer
-	rateLimits        *rateLimiter
+	store                       *storage.Store
+	sessions                    *sessionStore
+	secureCookies               bool
+	onlineTimeout               time.Duration
+	heartbeatInterval           time.Duration
+	adminOrigin                 string
+	now                         func() time.Time
+	handler                     http.Handler
+	hub                         *eventHub
+	accountMailer               AccountMailer
+	rateLimits                  *rateLimiter
+	requireInstallationIdentity bool
+	metrics                     heartbeatMetrics
 }
 
 // New creates an API-only HTTP application. The backend does not read, render
@@ -75,6 +77,7 @@ func New(
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", app.health)
+	mux.HandleFunc("/metrics", app.metricsAPI)
 	mux.HandleFunc("/api/v1/device/heartbeat", app.heartbeat)
 	mux.HandleFunc("/api/v1/admin/session", app.adminSessionAPI)
 	mux.HandleFunc("/api/v1/account/register", app.accountRegisterAPI)

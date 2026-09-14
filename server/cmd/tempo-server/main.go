@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -148,21 +149,29 @@ func run(configPath string, logger *log.Logger) error {
 }
 
 func accountMailerOptions(environmentValue func(string) string) ([]web.Option, error) {
+	options := make([]web.Option, 0, 2)
 	address := strings.TrimSpace(environmentValue("TEMPO_SMTP_ADDRESS"))
 	username := environmentValue("TEMPO_SMTP_USERNAME")
 	password := environmentValue("TEMPO_SMTP_PASSWORD")
 	from := strings.TrimSpace(environmentValue("TEMPO_SMTP_FROM"))
-	if address == "" && username == "" && password == "" && from == "" {
-		return nil, nil
+	if address != "" || username != "" || password != "" || from != "" {
+		if address == "" || from == "" {
+			return nil, errors.New("TEMPO_SMTP_ADDRESS and TEMPO_SMTP_FROM are required when account e-mail is configured")
+		}
+		mailer, err := accountmail.NewSMTP(address, username, password, from)
+		if err != nil {
+			return nil, fmt.Errorf("configure account e-mail: %w", err)
+		}
+		options = append(options, web.WithAccountMailer(mailer))
 	}
-	if address == "" || from == "" {
-		return nil, errors.New("TEMPO_SMTP_ADDRESS and TEMPO_SMTP_FROM are required when account e-mail is configured")
+	if raw := strings.TrimSpace(environmentValue("TEMPO_REQUIRE_INSTALLATION_IDENTITY")); raw != "" {
+		required, err := strconv.ParseBool(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse TEMPO_REQUIRE_INSTALLATION_IDENTITY: %w", err)
+		}
+		options = append(options, web.WithInstallationIdentityRequired(required))
 	}
-	mailer, err := accountmail.NewSMTP(address, username, password, from)
-	if err != nil {
-		return nil, fmt.Errorf("configure account e-mail: %w", err)
-	}
-	return []web.Option{web.WithAccountMailer(mailer)}, nil
+	return options, nil
 }
 
 func loadBootstrapAdministratorPassword(environmentPassword, passwordFilePath string) (string, error) {

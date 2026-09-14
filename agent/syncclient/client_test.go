@@ -131,6 +131,7 @@ func TestRunUsesServerIntervalAndDoesNotPersistItAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	client.jitter = func(delay time.Duration) time.Duration { return delay }
 	var waits []time.Duration
 	client.wait = func(_ context.Context, delay time.Duration) bool {
 		waits = append(waits, delay)
@@ -154,6 +155,7 @@ func TestRunUsesServerIntervalAndDoesNotPersistItAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	restartedClient.jitter = func(delay time.Duration) time.Duration { return delay }
 	restartedWait := time.Duration(0)
 	restartedClient.wait = func(_ context.Context, delay time.Duration) bool {
 		restartedWait = delay
@@ -335,7 +337,7 @@ recovered:
 }
 
 func TestDecodeHeartbeatErrorExplainsRequiredAgentUpgrade(t *testing.T) {
-	err := decodeHeartbeatError(http.StatusUpgradeRequired, strings.NewReader(
+	err := decodeHeartbeatError(http.StatusUpgradeRequired, "", strings.NewReader(
 		`{"error":"agent update required","code":"agent_upgrade_required"}`,
 	))
 	if !strings.Contains(err.Error(), "update the Compasso agent") {
@@ -344,7 +346,7 @@ func TestDecodeHeartbeatErrorExplainsRequiredAgentUpgrade(t *testing.T) {
 }
 
 func TestDecodeHeartbeatErrorExplainsRevisionConflict(t *testing.T) {
-	err := decodeHeartbeatError(http.StatusConflict, strings.NewReader(
+	err := decodeHeartbeatError(http.StatusConflict, "", strings.NewReader(
 		`{"error":"client synchronization state is newer than this device","code":"revision_ahead","client_revision":9,"server_revision":1}`,
 	))
 	if !strings.Contains(err.Error(), "local revision 9") ||
@@ -355,16 +357,96 @@ func TestDecodeHeartbeatErrorExplainsRevisionConflict(t *testing.T) {
 }
 
 func TestDecodeHeartbeatErrorDoesNotExposeUntrustedServerMessage(t *testing.T) {
-	err := decodeHeartbeatError(http.StatusUnauthorized, strings.NewReader(
+	err := decodeHeartbeatError(http.StatusUnauthorized, "", strings.NewReader(
 		`{"error":"secret supplied by an untrusted proxy"}`,
 	))
-	if err.Error() != "heartbeat returned HTTP 401" {
+	if err.Error() != "heartbeat returned incompatible HTTP 401" {
 		t.Fatalf("generic heartbeat error=%q", err)
 	}
 }
 
+func TestDecodeHeartbeatErrorClassifiesRetryDelays(t *testing.T) {
+	for _, test := range []struct {
+		name, retryAfter, payload string
+		status                    int
+		kind                      heartbeatRetryKind
+		delay                     time.Duration
+	}{
+		{name: "rate minimum", status: http.StatusTooManyRequests, retryAfter: "1", kind: retryRateLimited, delay: 5 * time.Second},
+		{name: "rate value", status: http.StatusTooManyRequests, retryAfter: "120", kind: retryRateLimited, delay: 2 * time.Minute},
+		{name: "rate maximum", status: http.StatusTooManyRequests, retryAfter: "99999", kind: retryRateLimited, delay: time.Hour},
+		{name: "permanent", status: http.StatusConflict, payload: `{"code":"installation_conflict"}`, kind: retryPermanent},
+		{name: "incompatible", status: http.StatusBadRequest, payload: `{}`, kind: retryIncompatible},
+		{name: "transient", status: http.StatusServiceUnavailable, payload: `{}`, kind: retryTransient},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := decodeHeartbeatError(test.status, test.retryAfter, strings.NewReader(test.payload))
+			var remote *remoteHeartbeatError
+			if !errors.As(err, &remote) || remote.retryKind != test.kind || remote.retryAfter != test.delay {
+				t.Fatalf("classification=%+v err=%v", remote, err)
+			}
+		})
+	}
+}
+
+func TestHeartbeatJitterStaysBetweenZeroAndTenPercent(t *testing.T) {
+	base := 30 * time.Second
+	for attempt := 0; attempt < 100; attempt++ {
+		delay := jitteredHeartbeatDelay(base)
+		if delay < base || delay > base+base/10 {
+			t.Fatalf("jittered delay=%s", delay)
+		}
+	}
+}
+
+func TestRunSchedulesFailuresByServerClassification(t *testing.T) {
+	for _, test := range []struct {
+		name, code, retryAfter string
+		status                 int
+		want                   time.Duration
+	}{
+		{name: "transient", status: http.StatusServiceUnavailable, want: time.Second},
+		{name: "rate limited", status: http.StatusTooManyRequests, code: "rate_limited", retryAfter: "120", want: 2 * time.Minute},
+		{name: "permanent", status: http.StatusConflict, code: "installation_conflict", want: 6 * time.Hour},
+		{name: "incompatible", status: http.StatusBadRequest, want: time.Hour},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := agentstorage.Open(ctx, filepath.Join(t.TempDir(), "agent.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if test.retryAfter != "" {
+					w.Header().Set("Retry-After", test.retryAfter)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(test.status)
+				_ = json.NewEncoder(w).Encode(protocol.ErrorResponse{Error: "untrusted", Code: test.code})
+			})
+			client, err := New(store, &http.Client{Transport: handlerTransport{handler: handler}}, Config{
+				ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token", InstallationID: testInstallationID,
+				HeartbeatInterval: 30 * time.Second, AttemptTimeout: time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client.jitter = func(delay time.Duration) time.Duration { return delay }
+			var scheduled time.Duration
+			client.wait = func(_ context.Context, delay time.Duration) bool { scheduled = delay; return false }
+			if err := client.Run(ctx, log.New(io.Discard, "", 0)); err != nil {
+				t.Fatal(err)
+			}
+			if scheduled != test.want {
+				t.Fatalf("scheduled retry=%s, want %s", scheduled, test.want)
+			}
+		})
+	}
+}
+
 func TestDecodeLegacyConflictStillExplainsRevisionCause(t *testing.T) {
-	err := decodeHeartbeatError(http.StatusConflict, strings.NewReader(
+	err := decodeHeartbeatError(http.StatusConflict, "", strings.NewReader(
 		`{"error":"heartbeat rejected"}`,
 	))
 	if !strings.Contains(err.Error(), "local synchronization state is newer") {

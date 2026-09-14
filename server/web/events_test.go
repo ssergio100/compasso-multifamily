@@ -15,6 +15,33 @@ import (
 	"github.com/ssergio100/compasso/server/storage"
 )
 
+func TestHeartbeatStatusPublicationSuppressesUnchangedNoise(t *testing.T) {
+	hub := newEventHub()
+	events, unsubscribe := hub.subscribe("device-1")
+	defer unsubscribe()
+	now := time.Date(2026, time.September, 14, 0, 0, 0, 0, time.UTC)
+	first := streamEvent{Name: "status", Data: json.RawMessage(`{"online":true}`)}
+	hub.publishHeartbeatStatus("device-1", first, now)
+	if received := <-events; string(received.Data) != string(first.Data) {
+		t.Fatalf("first status=%s", received.Data)
+	}
+	hub.publishHeartbeatStatus("device-1", first, now.Add(5*time.Second))
+	select {
+	case unexpected := <-events:
+		t.Fatalf("unchanged status published early: %s", unexpected.Data)
+	default:
+	}
+	changed := streamEvent{Name: "status", Data: json.RawMessage(`{"online":true,"counting":true}`)}
+	hub.publishHeartbeatStatus("device-1", changed, now.Add(6*time.Second))
+	if received := <-events; string(received.Data) != string(changed.Data) {
+		t.Fatalf("changed status=%s", received.Data)
+	}
+	hub.publishHeartbeatStatus("device-1", changed, now.Add(36*time.Second))
+	if received := <-events; string(received.Data) != string(changed.Data) {
+		t.Fatalf("periodic status=%s", received.Data)
+	}
+}
+
 func TestEventHubDeliversAndDropsSlowSubscribers(t *testing.T) {
 	hub := newEventHub()
 	events, unsubscribe := hub.subscribe("device-a")

@@ -13,10 +13,45 @@ type rateEntry struct {
 type rateLimiter struct {
 	mu      sync.Mutex
 	entries map[string]rateEntry
+	buckets map[string]tokenBucket
+}
+
+type tokenBucket struct {
+	tokens float64
+	last   time.Time
 }
 
 func newRateLimiter() *rateLimiter {
-	return &rateLimiter{entries: make(map[string]rateEntry)}
+	return &rateLimiter{entries: make(map[string]rateEntry), buckets: make(map[string]tokenBucket)}
+}
+
+func (l *rateLimiter) takeBucket(key string, ratePerSecond, burst float64, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	bucket, exists := l.buckets[key]
+	if !exists || now.Before(bucket.last) {
+		bucket = tokenBucket{tokens: burst, last: now}
+	} else {
+		bucket.tokens += now.Sub(bucket.last).Seconds() * ratePerSecond
+		if bucket.tokens > burst {
+			bucket.tokens = burst
+		}
+		bucket.last = now
+	}
+	if bucket.tokens < 1 {
+		l.buckets[key] = bucket
+		return false
+	}
+	bucket.tokens--
+	l.buckets[key] = bucket
+	if len(l.buckets) >= 1000 {
+		for existingKey, existing := range l.buckets {
+			if now.Sub(existing.last) > time.Hour {
+				delete(l.buckets, existingKey)
+			}
+		}
+	}
+	return true
 }
 
 func (l *rateLimiter) take(key string, maximum int, window time.Duration, now time.Time) bool {

@@ -21,12 +21,21 @@ type streamEvent struct {
 // eventHub delivers device updates to subscribed browser streams. It never
 // blocks publishers: slow or disconnected subscribers are dropped.
 type eventHub struct {
-	mu          sync.Mutex
-	subscribers map[string]map[chan streamEvent]struct{}
+	mu              sync.Mutex
+	subscribers     map[string]map[chan streamEvent]struct{}
+	publishedStatus map[string]publishedStatus
+}
+
+type publishedStatus struct {
+	payload string
+	at      time.Time
 }
 
 func newEventHub() *eventHub {
-	return &eventHub{subscribers: make(map[string]map[chan streamEvent]struct{})}
+	return &eventHub{
+		subscribers:     make(map[string]map[chan streamEvent]struct{}),
+		publishedStatus: make(map[string]publishedStatus),
+	}
 }
 
 func (h *eventHub) subscribe(deviceID string) (chan streamEvent, func()) {
@@ -50,6 +59,27 @@ func (h *eventHub) unsubscribe(deviceID string, channel chan streamEvent) {
 		}
 		if len(subscribers) == 0 {
 			delete(h.subscribers, deviceID)
+			delete(h.publishedStatus, deviceID)
+		}
+	}
+}
+
+func (h *eventHub) publishHeartbeatStatus(deviceID string, event streamEvent, now time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.subscribers[deviceID]) == 0 {
+		return
+	}
+	payload := string(event.Data)
+	previous := h.publishedStatus[deviceID]
+	if previous.payload == payload && now.Sub(previous.at) < 30*time.Second {
+		return
+	}
+	h.publishedStatus[deviceID] = publishedStatus{payload: payload, at: now}
+	for channel := range h.subscribers[deviceID] {
+		select {
+		case channel <- event:
+		default:
 		}
 	}
 }
@@ -147,6 +177,21 @@ func (a *App) publishDeviceStatus(deviceID string, name string) {
 		return
 	}
 	a.hub.publish(deviceID, streamEvent{Name: name, Data: data})
+}
+
+func (a *App) publishHeartbeatDeviceStatus(deviceID string, now time.Time) {
+	if !a.hub.hasSubscribers(deviceID) {
+		return
+	}
+	_, _, liveStatus, err := a.loadDeviceLiveStatus(context.Background(), deviceID)
+	if err != nil {
+		return
+	}
+	data, err := json.Marshal(liveStatus)
+	if err != nil {
+		return
+	}
+	a.hub.publishHeartbeatStatus(deviceID, streamEvent{Name: "status", Data: data}, now)
 }
 
 // publishCommunicationLog forwards a stored communication log to subscribers
@@ -262,7 +307,7 @@ func (a *App) runOfflineDetector(ctx context.Context) {
 					publishedOffline.Delete(device.ID)
 					continue
 				}
-				if isOnline(device.LastSeenAt, now, a.onlineTimeout) {
+				if isOnline(device, now, a.onlineTimeout) {
 					publishedOffline.Delete(device.ID)
 					continue
 				}

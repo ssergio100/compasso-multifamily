@@ -28,6 +28,13 @@ func WithAccountMailer(mailer AccountMailer) Option {
 	}
 }
 
+func WithInstallationIdentityRequired(required bool) Option {
+	return func(app *App) error {
+		app.requireInstallationIdentity = required
+		return nil
+	}
+}
+
 type unavailableAccountMailer struct{}
 
 func (unavailableAccountMailer) Available() bool { return false }

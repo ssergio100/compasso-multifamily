@@ -21,6 +21,7 @@ import (
 var (
 	ErrInvalidDeviceCredentials = errors.New("invalid device credentials")
 	ErrFamilySuspended          = errors.New("family suspended")
+	ErrInstallationConflict     = errors.New("installation conflict")
 	ErrRevisionAhead            = errors.New("client policy revision is ahead of server")
 )
 
@@ -41,6 +42,9 @@ func (e *RevisionAheadError) Is(target error) bool { return target == ErrRevisio
 // IssueDeviceToken replaces a device credential and returns the secret once.
 // Only its SHA-256 digest is persisted; the token has 256 bits of entropy.
 func (s *Store) IssueDeviceToken(ctx context.Context, deviceID string, now time.Time) (string, error) {
+	if deviceID == "" || now.IsZero() {
+		return "", errors.New("device id and issue time are required")
+	}
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		return "", fmt.Errorf("generate device token: %w", err)
@@ -52,7 +56,11 @@ func (s *Store) IssueDeviceToken(ctx context.Context, deviceID string, now time.
 		return "", err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE device SET device_token_hash=?, updated_at=? WHERE id=?`,
+	result, err := tx.ExecContext(ctx, `
+		UPDATE device SET device_token_hash=?, credential_generation=credential_generation+1,
+			active_installation_id=NULL, installation_bound_at=NULL, online_until=NULL, last_seen_at=NULL,
+			graphical_session_active=0, graphical_session_locked=0, graphical_session_id=NULL,
+			updated_at=? WHERE id=?`,
 		hex.EncodeToString(digest[:]), formatTime(now), deviceID)
 	if err != nil {
 		return "", fmt.Errorf("store device token: %w", err)
@@ -61,7 +69,13 @@ func (s *Store) IssueDeviceToken(ctx context.Context, deviceID string, now time.
 	if changed == 0 {
 		return "", ErrNotFound
 	}
-	if err := insertAudit(ctx, tx, deviceID, "device_token_issued", map[string]string{"status": "replaced"}, now); err != nil {
+	var generation int64
+	if err := tx.QueryRowContext(ctx, `SELECT credential_generation FROM device WHERE id=?`, deviceID).Scan(&generation); err != nil {
+		return "", err
+	}
+	if err := insertAudit(ctx, tx, deviceID, "device_token_issued", map[string]string{
+		"status": "replaced", "credential_generation": strconv.FormatInt(generation, 10),
+	}, now); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {
@@ -81,7 +95,11 @@ func (s *Store) RevokeDeviceToken(ctx context.Context, deviceID string, now time
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE device SET device_token_hash='', updated_at=? WHERE id=?`, formatTime(now), deviceID)
+	result, err := tx.ExecContext(ctx, `
+		UPDATE device SET device_token_hash='', credential_generation=credential_generation+1,
+			active_installation_id=NULL, installation_bound_at=NULL, online_until=NULL, last_seen_at=NULL,
+			graphical_session_active=0, graphical_session_locked=0, graphical_session_id=NULL,
+			updated_at=? WHERE id=?`, formatTime(now), deviceID)
 	if err != nil {
 		return fmt.Errorf("revoke device token: %w", err)
 	}
@@ -89,10 +107,37 @@ func (s *Store) RevokeDeviceToken(ctx context.Context, deviceID string, now time
 	if changed == 0 {
 		return ErrNotFound
 	}
-	if err := insertAudit(ctx, tx, deviceID, "device_token_revoked", map[string]string{"status": "revoked"}, now); err != nil {
+	var generation int64
+	if err := tx.QueryRowContext(ctx, `SELECT credential_generation FROM device WHERE id=?`, deviceID).Scan(&generation); err != nil {
+		return err
+	}
+	if err := insertAudit(ctx, tx, deviceID, "device_token_revoked", map[string]string{
+		"status": "revoked", "credential_generation": strconv.FormatInt(generation, 10),
+	}, now); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// CheckDeviceInstallation rejects a concurrent installation before the
+// server spends work decoding its complete heartbeat. An empty current binding
+// is resolved atomically by ReceiveHeartbeatForInstallation.
+func (s *Store) CheckDeviceInstallation(ctx context.Context, deviceID, installationID string) error {
+	if !validOpaqueIdentifier(deviceID) || !protocol.ValidInstallationID(installationID) {
+		return errors.New("invalid installation identity")
+	}
+	var active string
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(active_installation_id, '') FROM device WHERE id=?`, deviceID).Scan(&active)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if active != "" && active != installationID {
+		return ErrInstallationConflict
+	}
+	return nil
 }
 
 func (s *Store) AuthenticateDevice(ctx context.Context, deviceID, token string) error {
@@ -123,6 +168,28 @@ func (s *Store) AuthenticateDevice(ctx context.Context, deviceID, token string) 
 }
 
 func (s *Store) ReceiveHeartbeat(ctx context.Context, deviceID string, request protocol.HeartbeatRequest, now time.Time) (protocol.HeartbeatResponse, error) {
+	return s.receiveHeartbeat(ctx, deviceID, "", nil, request, now)
+}
+
+func (s *Store) ReceiveHeartbeatForInstallation(
+	ctx context.Context, deviceID, installationID string, nextInterval time.Duration,
+	request protocol.HeartbeatRequest, now time.Time,
+) (protocol.HeartbeatResponse, error) {
+	if !protocol.ValidInstallationID(installationID) || nextInterval < time.Second || nextInterval > 10*time.Minute {
+		return protocol.HeartbeatResponse{}, errors.New("invalid installation heartbeat")
+	}
+	presenceLifetime := 4 * nextInterval
+	if presenceLifetime < time.Minute {
+		presenceLifetime = time.Minute
+	}
+	onlineUntil := now.Add(presenceLifetime)
+	return s.receiveHeartbeat(ctx, deviceID, installationID, &onlineUntil, request, now)
+}
+
+func (s *Store) receiveHeartbeat(
+	ctx context.Context, deviceID, installationID string, onlineUntil *time.Time,
+	request protocol.HeartbeatRequest, now time.Time,
+) (protocol.HeartbeatResponse, error) {
 	const maximumDailyUsageSeconds = int64((48 * time.Hour) / time.Second)
 	if !validOpaqueIdentifier(deviceID) || request.PolicyRevision < 0 || request.ControlRevision < 0 || request.SessionStateRevision < 0 ||
 		request.SecondsUsed < 0 || request.SecondsUsed > maximumDailyUsageSeconds || now.IsZero() {
@@ -152,10 +219,16 @@ func (s *Store) ReceiveHeartbeat(ctx context.Context, deviceID string, request p
 	}
 	defer tx.Rollback()
 	var serverRevision int64
-	if err := tx.QueryRowContext(ctx, `SELECT policy_revision FROM device WHERE id=?`, deviceID).Scan(&serverRevision); errors.Is(err, sql.ErrNoRows) {
+	var activeInstallationID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT policy_revision, COALESCE(active_installation_id, '') FROM device WHERE id=?`, deviceID,
+	).Scan(&serverRevision, &activeInstallationID); errors.Is(err, sql.ErrNoRows) {
 		return protocol.HeartbeatResponse{}, ErrNotFound
 	} else if err != nil {
 		return protocol.HeartbeatResponse{}, err
+	}
+	if installationID != "" && activeInstallationID != "" && activeInstallationID != installationID {
+		return protocol.HeartbeatResponse{}, ErrInstallationConflict
 	}
 	if request.PolicyRevision > serverRevision || request.SessionStateRevision > serverRevision {
 		clientRevision := request.PolicyRevision
@@ -168,18 +241,28 @@ func (s *Store) ReceiveHeartbeat(ctx context.Context, deviceID string, request p
 		}
 	}
 	stamp := formatTime(now)
+	if installationID != "" && activeInstallationID == "" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE device SET active_installation_id=?, installation_bound_at=?
+			WHERE id=? AND active_installation_id IS NULL`, installationID, stamp, deviceID); err != nil {
+			return protocol.HeartbeatResponse{}, err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE device SET last_seen_at=?, applied_policy_revision=?, applied_control_revision=?,
-			graphical_session_active=?, graphical_session_locked=?, graphical_session_id=?, updated_at=? WHERE id=?`,
-		stamp, request.PolicyRevision, request.ControlRevision, boolInt(request.GraphicalSessionActive),
-		boolInt(request.GraphicalSessionLocked), nullableSessionID(request.GraphicalSessionActive, request.GraphicalSessionID), stamp, deviceID); err != nil {
+		UPDATE device SET last_seen_at=?, online_until=COALESCE(?, online_until),
+			applied_policy_revision=?, applied_control_revision=?, graphical_session_active=?,
+			graphical_session_locked=?, graphical_session_id=?, updated_at=? WHERE id=?`,
+		stamp, nullableTime(onlineUntil), request.PolicyRevision, request.ControlRevision,
+		boolInt(request.GraphicalSessionActive), boolInt(request.GraphicalSessionLocked),
+		nullableSessionID(request.GraphicalSessionActive, request.GraphicalSessionID), stamp, deviceID); err != nil {
 		return protocol.HeartbeatResponse{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO daily_usage(device_id, local_date, seconds_used, last_sync_at) VALUES (?, ?, ?, ?)
 		ON CONFLICT(device_id, local_date) DO UPDATE SET
 			seconds_used=MAX(daily_usage.seconds_used, excluded.seconds_used),
-			last_sync_at=excluded.last_sync_at`, deviceID, request.LocalDate, request.SecondsUsed, stamp); err != nil {
+			last_sync_at=excluded.last_sync_at
+		WHERE excluded.seconds_used>daily_usage.seconds_used`, deviceID, request.LocalDate, request.SecondsUsed, stamp); err != nil {
 		return protocol.HeartbeatResponse{}, fmt.Errorf("store heartbeat usage: %w", err)
 	}
 	if err := applyPendingRemoteBonuses(ctx, tx, deviceID, request.LocalDate); err != nil {
@@ -701,4 +784,11 @@ func nullableSessionID(active bool, sessionID string) interface{} {
 		return nil
 	}
 	return sessionID
+}
+
+func nullableTime(value *time.Time) interface{} {
+	if value == nil {
+		return nil
+	}
+	return formatTime(*value)
 }

@@ -37,6 +37,7 @@ type Device struct {
 	Name                   string
 	AvatarKey              string
 	LastSeenAt             *time.Time
+	OnlineUntil            *time.Time
 	PolicyRevision         int64
 	AppliedPolicyRevision  int64
 	AppliedControlRevision int64
@@ -447,7 +448,7 @@ func (s *Store) ListDevicesForFamily(ctx context.Context, familyID string) ([]De
 
 func (s *Store) listDevices(ctx context.Context, familyID string, scoped bool) ([]Device, error) {
 	query := `
-		SELECT id, name, avatar_key, last_seen_at, policy_revision, applied_policy_revision, applied_control_revision,
+		SELECT id, name, avatar_key, last_seen_at, online_until, policy_revision, applied_policy_revision, applied_control_revision,
 		       graphical_session_active, graphical_session_locked, graphical_session_id, created_at
 		FROM device`
 	args := []interface{}{}
@@ -464,12 +465,12 @@ func (s *Store) listDevices(ctx context.Context, familyID string, scoped bool) (
 	var devices []Device
 	for rows.Next() {
 		var device Device
-		var lastSeen sql.NullString
+		var lastSeen, onlineUntil sql.NullString
 		var graphicalSessionID sql.NullString
 		var graphicalSessionActive int
 		var graphicalSessionLocked int
 		var created string
-		if err := rows.Scan(&device.ID, &device.Name, &device.AvatarKey, &lastSeen, &device.PolicyRevision,
+		if err := rows.Scan(&device.ID, &device.Name, &device.AvatarKey, &lastSeen, &onlineUntil, &device.PolicyRevision,
 			&device.AppliedPolicyRevision, &device.AppliedControlRevision, &graphicalSessionActive,
 			&graphicalSessionLocked, &graphicalSessionID, &created); err != nil {
 			return nil, err
@@ -487,6 +488,13 @@ func (s *Store) listDevices(ctx context.Context, familyID string, scoped bool) (
 				return nil, err
 			}
 			device.LastSeenAt = &value
+		}
+		if onlineUntil.Valid {
+			value, err := parseTime(onlineUntil.String)
+			if err != nil {
+				return nil, err
+			}
+			device.OnlineUntil = &value
 		}
 		devices = append(devices, device)
 	}
@@ -509,16 +517,16 @@ func (s *Store) DeviceBelongsToFamily(ctx context.Context, familyID, deviceID st
 
 func (s *Store) LoadDevice(ctx context.Context, id string) (Device, Policy, error) {
 	var device Device
-	var lastSeen sql.NullString
+	var lastSeen, onlineUntil sql.NullString
 	var graphicalSessionID sql.NullString
 	var graphicalSessionActive int
 	var graphicalSessionLocked int
 	var created string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, avatar_key, last_seen_at, policy_revision, applied_policy_revision, applied_control_revision,
+		SELECT id, name, avatar_key, last_seen_at, online_until, policy_revision, applied_policy_revision, applied_control_revision,
 		       graphical_session_active, graphical_session_locked, graphical_session_id, created_at
 		FROM device WHERE id=?`, id,
-	).Scan(&device.ID, &device.Name, &device.AvatarKey, &lastSeen, &device.PolicyRevision,
+	).Scan(&device.ID, &device.Name, &device.AvatarKey, &lastSeen, &onlineUntil, &device.PolicyRevision,
 		&device.AppliedPolicyRevision, &device.AppliedControlRevision, &graphicalSessionActive,
 		&graphicalSessionLocked, &graphicalSessionID, &created)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -537,6 +545,13 @@ func (s *Store) LoadDevice(ctx context.Context, id string) (Device, Policy, erro
 			return Device{}, Policy{}, parseErr
 		}
 		device.LastSeenAt = &value
+	}
+	if onlineUntil.Valid {
+		value, parseErr := parseTime(onlineUntil.String)
+		if parseErr != nil {
+			return Device{}, Policy{}, parseErr
+		}
+		device.OnlineUntil = &value
 	}
 	policy, err := s.loadPolicy(ctx, id)
 	return device, policy, err

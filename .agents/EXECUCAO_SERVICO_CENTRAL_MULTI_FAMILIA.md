@@ -51,8 +51,34 @@ inventário de hardware ou interfaces descontinuadas.
 | 0. Preparação | concluído | branch criada e diário versionável iniciado |
 | 1. Isolamento | concluído | migração preserva dados; duas famílias não acessam dados, efeitos, logs ou SSE entre si; suspensão local validada |
 | 2. Entrada autônoma | concluído | cadastro, confirmação, login, recuperação, dispositivo e exclusão passam no fluxo completo sem operador |
-| 3. Agente e carga | pendente | UUID, vínculo, rotação, erros e heartbeat eficiente passam nos testes |
+| 3. Agente e carga | concluído | UUID, vínculo, rotação, erros e heartbeat eficiente passam nos testes |
 | 4. Abertura do piloto | pendente | suíte, restauração e carga de 500 agentes aprovadas antes da segunda família |
+
+## Checklist de retomada
+
+- [x] Criar branch dedicada e diário versionado.
+- [x] Migrar família/conta/dispositivo preservando a instalação existente.
+- [x] Isolar leituras, mutações, atividades, diagnóstico e SSE por família.
+- [x] Revalidar sessões e implementar suspensão/reativação local.
+- [x] Entregar cadastro autônomo, confirmação, recuperação, troca de e-mail,
+  troca de senha e exclusão da família.
+- [x] Aplicar limites atômicos de 100 famílias e cinco dispositivos.
+- [x] Exigir senha atual para token e exclusões; integrar SMTP com STARTTLS.
+- [x] Persistir UUID/fingerprint no agente e enviar a capacidade no heartbeat.
+- [x] Gravar o checkpoint agente-primeiro antes da exigência no servidor.
+- [x] Implementar vínculo atômico, conflito, rotação/revogação e
+  `online_until` com intervalos 5/30 segundos.
+- [x] Implementar jitter, esperas por classe de erro, limites de heartbeat,
+  métricas agregadas e redução inicial de escrita/log/SSE.
+- [x] Concluir testes focados e a suíte integral do marco 3; corrigir qualquer
+  regressão encontrada.
+- [ ] Fechar a confirmação de e-mail da conta migrada e as operações locais
+  excepcionais necessárias antes do piloto.
+- [ ] Validar backup e restauração em banco migrado.
+- [x] Executar o cenário de carga equivalente a uma hora com 500 agentes,
+  registrar p95, erros e crescimento do banco.
+- [ ] Validar configuração pública (HTTPS, cookies, origem, SMTP e exigência de
+  identidade), executar `make test` final e registrar a decisão de abertura.
 
 ## Estado inicial confirmado
 
@@ -174,13 +200,45 @@ inventário de hardware ou interfaces descontinuadas.
   canônico. O servidor ainda não exige nem vincula esse cabeçalho neste
   checkpoint, preservando a ordem agente-primeiro da implantação.
 
+### 2026-09-14 — marco 3 concluído: vínculo e controle de carga
+
+- O servidor vincula o primeiro UUID v4 dentro da mesma transação de um
+  heartbeat válido. Outro UUID recebe `409 installation_conflict` antes da
+  decodificação completa; rotação e revogação incrementam a geração, limpam o
+  vínculo e a presença, sem apagar política ou consumo central.
+- A exigência de `installation-identity` é negociável por
+  `COMPASSO_REQUIRE_INSTALLATION_IDENTITY` e fica desativada durante a etapa
+  agente-primeiro. Quando ativa, agente antigo recebe
+  `426 agent_upgrade_required`.
+- O heartbeat retorna 5 segundos com sessão gráfica e 30 segundos sem sessão.
+  O servidor grava `online_until` por `max(60 s, 4 x intervalo)`; o painel usa
+  esse prazo em vez do timeout global para agentes compatíveis.
+- O agente acrescenta jitter de 0% a 10%. Rede e `5xx` usam backoff exponencial
+  até cinco minutos, `429` respeita `Retry-After` entre cinco segundos e uma
+  hora, erros permanentes aguardam seis horas e outros `4xx`, uma hora.
+- A aplicação limita 50 heartbeats/s globalmente, dez credenciais inválidas/s
+  por origem com rajada de vinte e, quando a identidade é obrigatória, um
+  heartbeat/s por dispositivo com rajada de dois.
+- Heartbeat saudável sem mudança não cria histórico de comunicação, não
+  regrava uso diário idêntico e só publica o mesmo status SSE a cada trinta
+  segundos. `/metrics` expõe apenas contadores agregados e histograma de
+  latência.
+- O ensaio reproduzível `TestPilotLoadOneLogicalHour500Agents` avançou uma hora
+  lógica com 500 agentes: 100 ativos a cada 5 s e 400 ociosos a cada 30 s.
+  Foram 120.000 respostas `200`, nenhum `5xx`, p95 de 2,380056 ms e crescimento
+  do conjunto SQLite de 163.840 bytes (6.422.680 para 6.586.520 bytes). A
+  execução real durou 238,60 s com `_synchronous=FULL`.
+- O teste de carga é propositalmente opt-in para não transformar toda suíte em
+  um ensaio de quatro minutos: execute com
+  `COMPASSO_RUN_PILOT_LOAD_TEST=1 go test -v ./server/web -run
+  '^TestPilotLoadOneLogicalHour500Agents$' -count=1 -timeout=30m`.
+
 ## Próximo passo exato
 
-Implementar no servidor o vínculo atômico do primeiro UUID somente junto a um
-heartbeat válido. Rotação/revogação devem incrementar a geração, limpar o
-vínculo e a presença; UUID concorrente deve receber
-`409 installation_conflict`, e agente sem a capacidade obrigatória deve
-receber `426 agent_upgrade_required`.
+Gravar o checkpoint do marco 3. Depois fechar as duas pendências operacionais
+anteriores ao piloto: confirmação do e-mail da conta migrada e exclusão
+excepcional de família suspensa por comando local com o ID exato. Em seguida
+validar backup/restauração sobre um banco migrado.
 
 ## Validação acumulada
 
@@ -199,3 +257,11 @@ receber `426 agent_upgrade_required`.
 - `go test ./agent/storage ./agent/syncclient ./agent/cmd/tempo-agent
   ./protocol/v1` e `./scripts/test-migrations.sh` — aprovados no checkpoint
   agente-primeiro; o banco local possui seis migrações.
+- `go test ./agent/syncclient ./server/storage ./server/web
+  ./server/cmd/tempo-server` — aprovado após o vínculo, os novos erros, limites,
+  métricas e a redução de escrita/log/SSE do marco 3.
+- teste de carga opt-in — aprovado com 500 agentes, uma hora lógica, 120.000
+  heartbeats, zero erro, p95 de 2,380056 ms e 163.840 bytes de crescimento.
+- `make test` — aprovado integralmente ao concluir o marco 3: `go vet`, todos
+  os pacotes Go, 22 testes da interface local, typecheck/build da `admin-ui`,
+  seis migrações do agente, 16 do servidor, hardening, documentação e builds.

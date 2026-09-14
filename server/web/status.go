@@ -88,7 +88,7 @@ func (a *App) loadDeviceLiveStatusFrom(ctx context.Context, source deviceLiveSta
 	}
 	now := a.now()
 	localDate := now.Format("2006-01-02")
-	online := isOnline(device.LastSeenAt, now, a.onlineTimeout)
+	online := isOnline(device, now, a.onlineTimeout)
 	if online {
 		latestHeartbeatLocalDate, dateErr := source.LatestHeartbeatLocalDate(ctx)
 		if dateErr != nil {
@@ -191,8 +191,11 @@ func (a *App) loadDeviceLiveStatusFrom(ctx context.Context, source deviceLiveSta
 	return device, storedPolicy, liveStatus, nil
 }
 
-func isOnline(lastSeen *time.Time, now time.Time, timeout time.Duration) bool {
-	return lastSeen != nil && !lastSeen.Before(now.Add(-timeout))
+func isOnline(device storage.Device, now time.Time, legacyTimeout time.Duration) bool {
+	if device.OnlineUntil != nil {
+		return now.Before(*device.OnlineUntil)
+	}
+	return device.LastSeenAt != nil && !device.LastSeenAt.Before(now.Add(-legacyTimeout))
 }
 
 func secondsQuota(stored [7]int64) (converted policy.WeeklyQuota) {

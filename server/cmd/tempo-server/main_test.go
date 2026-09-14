@@ -90,4 +90,13 @@ func TestAccountMailerOptionsRequireCompleteSMTPConfiguration(t *testing.T) {
 	if err != nil || len(options) != 0 {
 		t.Fatalf("disabled SMTP options=%d err=%v", len(options), err)
 	}
+	environment["TEMPO_REQUIRE_INSTALLATION_IDENTITY"] = "true"
+	options, err = accountMailerOptions(lookup)
+	if err != nil || len(options) != 1 {
+		t.Fatalf("installation identity option=%d err=%v", len(options), err)
+	}
+	environment["TEMPO_REQUIRE_INSTALLATION_IDENTITY"] = "invalid"
+	if _, err := accountMailerOptions(lookup); err == nil {
+		t.Fatal("invalid installation identity flag was accepted")
+	}
 }

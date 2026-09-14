@@ -66,6 +66,25 @@ e-mail respondem `503`; portanto valide um cadastro e uma recuperação antes de
 abrir o piloto. O servidor exige STARTTLS e TLS 1.2 ou superior e nunca registra
 tokens de conta nos logs.
 
+### Identidade dos agentes e métricas
+
+Atualize primeiro todos os agentes existentes. Confirme que eles anunciam a
+capacidade `installation-identity` e só então ative no servidor:
+
+```dotenv
+COMPASSO_REQUIRE_INSTALLATION_IDENTITY=true
+```
+
+Um agente antigo passa a receber `426 agent_upgrade_required`; uma segunda
+instalação usando a mesma credencial recebe `409 installation_conflict`.
+Rotacionar a credencial do dispositivo libera o vínculo anterior sem apagar a
+política e o consumo centrais.
+
+`GET /metrics` expõe contadores agregados de heartbeats aceitos, rejeitados,
+limitados e com erro `5xx`, além do histograma de latência em formato
+Prometheus. Restrinja esse endpoint à rede de monitoramento no proxy público.
+Ele não contém IDs de família ou dispositivo.
+
 ## Operação
 
 ```bash

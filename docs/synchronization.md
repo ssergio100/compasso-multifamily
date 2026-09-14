@@ -32,13 +32,25 @@ o contador quando a sessão está presente e o agente informa que está contando
 ## Compatibilidade e falhas
 
 - o heartbeat anuncia `X-Compasso-Protocol-Version: 2`;
+- cada instalação anuncia a capacidade `installation-identity` e envia seu
+  UUID v4 persistido; outro UUID para a mesma credencial recebe
+  `409 installation_conflict`;
 - campos opcionais ausentes usam valores seguros e o intervalo padrão de três
   segundos;
-- respostas `401` indicam credencial de dispositivo inválida;
-- respostas `426` indicam que o agente precisa suportar a operação pendente;
+- `401 invalid_device_credentials`, `403 family_suspended`,
+  `409 installation_conflict` e `409 revision_ahead` são erros permanentes;
+- `426 agent_upgrade_required` indica que o agente precisa ser atualizado;
+- `429 rate_limited` respeita `Retry-After` entre cinco segundos e uma hora;
+- falhas de rede e `5xx` usam backoff exponencial de um segundo até cinco
+  minutos; outro `4xx` é tratado como incompatibilidade;
 - uma falha de rede não apaga a última autorização válida nem confirma um
   comando;
 - eventos e comandos possuem identificadores duráveis para tolerar reenvios.
+
+Com a identidade negociada, o servidor responde com 5 segundos durante uma
+sessão gráfica e 30 segundos sem sessão e calcula `online_until` usando no
+mínimo 60 segundos ou quatro vezes o intervalo. O agente acrescenta jitter de
+até 10% ao próximo ciclo normal.
 
 Detalhes de payloads, endpoints, revisões e estados estão em
 [arquitetura-comunicacao.md](arquitetura-comunicacao.md). Exemplos executáveis

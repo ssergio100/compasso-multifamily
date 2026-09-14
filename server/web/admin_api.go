@@ -783,7 +783,7 @@ func (a *App) adminDeviceResponse(device storage.Device) adminDeviceResponse {
 		ID: device.ID, Name: device.Name, AvatarKey: device.AvatarKey, LastSeenAt: device.LastSeenAt,
 		PolicyRevision: device.PolicyRevision, AppliedPolicyRevision: device.AppliedPolicyRevision,
 		GraphicalSessionActive: device.GraphicalSessionActive,
-		Online:                 isOnline(device.LastSeenAt, a.now(), a.onlineTimeout),
+		Online:                 isOnline(device, a.now(), a.onlineTimeout),
 	}
 }
 

@@ -67,11 +67,23 @@ func TestDeviceAuthenticationAndDuplicateHeartbeatAreIdempotent(t *testing.T) {
 	if err != nil || first.Policy == nil || first.Policy.Revision != 1 || len(first.AcknowledgedEvents) != 1 {
 		t.Fatalf("first heartbeat response=%+v err=%v", first, err)
 	}
+	var firstUsageSync string
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT last_sync_at FROM daily_usage WHERE device_id=? AND local_date=?`, device.ID, heartbeat.LocalDate,
+	).Scan(&firstUsageSync); err != nil {
+		t.Fatal(err)
+	}
 	heartbeat.PolicyRevision = 1
 	heartbeat.SecondsUsed = 60 // An older absolute checkpoint cannot reduce usage.
 	second, err := store.ReceiveHeartbeat(ctx, device.ID, heartbeat, now.Add(2*time.Second))
 	if err != nil || second.Policy != nil || len(second.AcknowledgedEvents) != 1 {
 		t.Fatalf("duplicate heartbeat response=%+v err=%v", second, err)
+	}
+	var duplicateUsageSync string
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT last_sync_at FROM daily_usage WHERE device_id=? AND local_date=?`, device.ID, heartbeat.LocalDate,
+	).Scan(&duplicateUsageSync); err != nil || duplicateUsageSync != firstUsageSync {
+		t.Fatalf("unchanged usage was rewritten first=%q duplicate=%q err=%v", firstUsageSync, duplicateUsageSync, err)
 	}
 	summary, err := store.LoadDailySummary(ctx, device.ID, "2026-08-10")
 	if err != nil || summary.UsedSeconds != 120 || summary.BonusSeconds != 300 {
@@ -93,6 +105,85 @@ func TestDeviceAuthenticationAndDuplicateHeartbeatAreIdempotent(t *testing.T) {
 	}
 	if bonusEvents != 1 {
 		t.Fatalf("duplicate heartbeat created %d bonus audit events", bonusEvents)
+	}
+}
+
+func TestInstallationBindingAndCredentialRotationAreAtomic(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
+	device, err := store.CreateDevice(ctx, "Vínculo", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstToken, err := store.IssueDeviceToken(ctx, device.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const firstInstallation = "79e78a4f-713b-4e19-a756-b60a0505248a"
+	const secondInstallation = "1c5b1779-953c-4ebd-8022-a9b6b99c243e"
+	if _, err := store.ReceiveHeartbeatForInstallation(
+		ctx, device.ID, firstInstallation, 30*time.Second,
+		protocol.HeartbeatRequest{LocalDate: "invalid"}, now,
+	); err == nil {
+		t.Fatal("invalid heartbeat occupied installation binding")
+	}
+	var active string
+	if err := store.db.QueryRowContext(ctx, `SELECT COALESCE(active_installation_id, '') FROM device WHERE id=?`, device.ID).Scan(&active); err != nil || active != "" {
+		t.Fatalf("binding after invalid payload=%q err=%v", active, err)
+	}
+	if _, err := store.ReceiveHeartbeatForInstallation(
+		ctx, device.ID, firstInstallation, 30*time.Second,
+		protocol.HeartbeatRequest{LocalDate: "2026-08-10"}, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var generation int64
+	var onlineUntil string
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT active_installation_id, credential_generation, online_until FROM device WHERE id=?`, device.ID,
+	).Scan(&active, &generation, &onlineUntil); err != nil || active != firstInstallation || generation != 1 || onlineUntil != formatTime(now.Add(2*time.Minute)) {
+		t.Fatalf("first binding active=%q generation=%d online_until=%q err=%v", active, generation, onlineUntil, err)
+	}
+	if err := store.CheckDeviceInstallation(ctx, device.ID, secondInstallation); !errors.Is(err, ErrInstallationConflict) {
+		t.Fatalf("concurrent preflight error=%v", err)
+	}
+	if _, err := store.ReceiveHeartbeatForInstallation(
+		ctx, device.ID, secondInstallation, 30*time.Second,
+		protocol.HeartbeatRequest{LocalDate: "2026-08-10"}, now.Add(time.Second),
+	); !errors.Is(err, ErrInstallationConflict) {
+		t.Fatalf("concurrent binding error=%v", err)
+	}
+	secondToken, err := store.IssueDeviceToken(ctx, device.ID, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AuthenticateDevice(ctx, device.ID, firstToken); !errors.Is(err, ErrInvalidDeviceCredentials) {
+		t.Fatalf("old token error=%v", err)
+	}
+	if err := store.AuthenticateDevice(ctx, device.ID, secondToken); err != nil {
+		t.Fatalf("new token error=%v", err)
+	}
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT COALESCE(active_installation_id, ''), credential_generation, COALESCE(online_until, '')
+		FROM device WHERE id=?`, device.ID,
+	).Scan(&active, &generation, &onlineUntil); err != nil || active != "" || generation != 2 || onlineUntil != "" {
+		t.Fatalf("rotation active=%q generation=%d online_until=%q err=%v", active, generation, onlineUntil, err)
+	}
+	if _, err := store.ReceiveHeartbeatForInstallation(
+		ctx, device.ID, secondInstallation, 5*time.Second,
+		protocol.HeartbeatRequest{LocalDate: "2026-08-10"}, now.Add(3*time.Second),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RevokeDeviceToken(ctx, device.ID, now.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT COALESCE(active_installation_id, ''), credential_generation FROM device WHERE id=?`, device.ID,
+	).Scan(&active, &generation); err != nil || active != "" || generation != 3 {
+		t.Fatalf("revocation active=%q generation=%d err=%v", active, generation, err)
 	}
 }
 

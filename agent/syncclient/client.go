@@ -4,12 +4,15 @@ package syncclient
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,7 +35,27 @@ const (
 	MinimumHeartbeatInterval   = time.Second
 	MaximumHeartbeatInterval   = 10 * time.Minute
 	repeatedFailureLogInterval = time.Minute
+	maximumTransientBackoff    = 5 * time.Minute
+	permanentFailureDelay      = 6 * time.Hour
+	incompatibleFailureDelay   = time.Hour
 )
+
+type heartbeatRetryKind int
+
+const (
+	retryTransient heartbeatRetryKind = iota
+	retryRateLimited
+	retryPermanent
+	retryIncompatible
+)
+
+type remoteHeartbeatError struct {
+	message    string
+	retryKind  heartbeatRetryKind
+	retryAfter time.Duration
+}
+
+func (e *remoteHeartbeatError) Error() string { return e.message }
 
 type heartbeatError struct {
 	stage string
@@ -56,6 +79,7 @@ type Client struct {
 	config                 Config
 	now                    func() time.Time
 	wait                   func(context.Context, time.Duration) bool
+	jitter                 func(time.Duration) time.Duration
 	graphicalSessionMu     sync.RWMutex
 	graphicalSessionActive bool
 	graphicalSessionID     string
@@ -131,7 +155,10 @@ func New(store *storage.Store, httpClient *http.Client, config Config) (*Client,
 		return nil, errors.New("heartbeat fallback must be between 1 second and 10 minutes")
 	}
 	config.ServerURL = strings.TrimRight(config.ServerURL, "/")
-	return &Client{store: store, http: httpClient, config: config, now: time.Now, wait: waitForHeartbeat}, nil
+	return &Client{
+		store: store, http: httpClient, config: config, now: time.Now,
+		wait: waitForHeartbeat, jitter: jitteredHeartbeatDelay,
+	}, nil
 }
 
 // SetGraphicalSession reports the established graphical session observed by
@@ -245,7 +272,7 @@ func (c *Client) Heartbeat(ctx context.Context, now time.Time) (result protocol.
 	defer response.Body.Close()
 	stage = "response"
 	if response.StatusCode != http.StatusOK {
-		failure := decodeHeartbeatError(response.StatusCode, response.Body)
+		failure := decodeHeartbeatError(response.StatusCode, response.Header.Get("Retry-After"), response.Body)
 		c.recordRetries(ctx, pending)
 		return protocol.HeartbeatResponse{}, failure
 	}
@@ -308,22 +335,62 @@ func (c *Client) Heartbeat(ctx context.Context, now time.Time) (result protocol.
 	return result, nil
 }
 
-func decodeHeartbeatError(status int, responseBody io.Reader) error {
+func decodeHeartbeatError(status int, retryAfterHeader string, responseBody io.Reader) error {
 	var response protocol.ErrorResponse
 	decoder := json.NewDecoder(io.LimitReader(responseBody, 4096))
-	if err := decoder.Decode(&response); err == nil && response.Code == "revision_ahead" {
-		return fmt.Errorf(
-			"heartbeat rejected: local revision %d is newer than server revision %d; local state belongs to another enrollment or the server was restored from an older backup",
-			response.ClientRevision, response.ServerRevision,
-		)
+	_ = decoder.Decode(&response)
+	if status == http.StatusTooManyRequests {
+		return &remoteHeartbeatError{
+			message: "heartbeat rate limited by the server", retryKind: retryRateLimited,
+			retryAfter: boundedRetryAfter(retryAfterHeader),
+		}
+	}
+	if response.Code == "revision_ahead" {
+		return &remoteHeartbeatError{
+			message: fmt.Sprintf(
+				"heartbeat rejected: local revision %d is newer than server revision %d; local state belongs to another enrollment or the server was restored from an older backup",
+				response.ClientRevision, response.ServerRevision,
+			), retryKind: retryPermanent,
+		}
+	}
+	switch response.Code {
+	case "invalid_device_credentials":
+		return &remoteHeartbeatError{message: "device credentials were rejected; reconfigure the Compasso agent", retryKind: retryPermanent}
+	case "family_suspended":
+		return &remoteHeartbeatError{message: "the Compasso family is suspended; contact support", retryKind: retryPermanent}
+	case "installation_conflict":
+		return &remoteHeartbeatError{message: "another Compasso agent installation is linked to this device; reconfigure it or rotate the device token", retryKind: retryPermanent}
+	case "agent_upgrade_required":
+		return &remoteHeartbeatError{message: "heartbeat rejected; update the Compasso agent", retryKind: retryPermanent}
+	}
+	if status >= 500 {
+		return &remoteHeartbeatError{message: fmt.Sprintf("heartbeat returned HTTP %d", status), retryKind: retryTransient}
 	}
 	if status == http.StatusConflict {
-		return errors.New("heartbeat rejected because local synchronization state is newer than the device on the server; local state may belong to another enrollment or the server may have been restored from an older backup")
+		return &remoteHeartbeatError{
+			message:   "heartbeat rejected because local synchronization state is newer than the device on the server; local state may belong to another enrollment or the server may have been restored from an older backup",
+			retryKind: retryIncompatible,
+		}
 	}
-	if status == http.StatusUpgradeRequired {
-		return errors.New("heartbeat rejected because the agent protocol is too old for a pending operation; update the Compasso agent")
+	if status >= 400 && status < 500 {
+		return &remoteHeartbeatError{message: fmt.Sprintf("heartbeat returned incompatible HTTP %d", status), retryKind: retryIncompatible}
 	}
 	return fmt.Errorf("heartbeat returned HTTP %d", status)
+}
+
+func boundedRetryAfter(value string) time.Duration {
+	seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return 5 * time.Second
+	}
+	delay := time.Duration(seconds) * time.Second
+	if delay < 5*time.Second {
+		return 5 * time.Second
+	}
+	if delay > time.Hour {
+		return time.Hour
+	}
+	return delay
 }
 
 func decodeHeartbeatResponse(responseBody io.Reader) (protocol.HeartbeatResponse, error) {
@@ -432,16 +499,31 @@ func (c *Client) Run(ctx context.Context, logger *log.Logger) error {
 			}
 			online, first = false, false
 			fastFollowUp = false
-			// Keep retry cadence measured from the start of the failed attempt.
-			// A request that consumed its whole timeout must not add another full
-			// backoff before the next try.
-			delay = backoff - attemptDuration
-			if delay < 0 {
-				delay = 0
+			var remoteFailure *remoteHeartbeatError
+			if errors.As(err, &remoteFailure) {
+				switch remoteFailure.retryKind {
+				case retryRateLimited:
+					delay = c.jitter(remoteFailure.retryAfter)
+				case retryPermanent:
+					delay = c.jitter(permanentFailureDelay)
+				case retryIncompatible:
+					delay = c.jitter(incompatibleFailureDelay)
+				default:
+					delay = c.jitter(backoff)
+				}
+			} else {
+				// Keep transient retry cadence measured from the start of the failed
+				// attempt. A timeout must not add another full backoff.
+				delay = c.jitter(backoff) - attemptDuration
+				if delay < 0 {
+					delay = 0
+				}
 			}
-			backoff *= 2
-			if backoff > normalInterval {
-				backoff = normalInterval
+			if remoteFailure == nil || remoteFailure.retryKind == retryTransient {
+				backoff *= 2
+				if backoff > maximumTransientBackoff {
+					backoff = maximumTransientBackoff
+				}
 			}
 			continue
 		}
@@ -469,10 +551,26 @@ func (c *Client) Run(ctx context.Context, logger *log.Logger) error {
 			delay = 0
 			fastFollowUp = true
 		} else {
-			delay = normalInterval
+			delay = c.jitter(normalInterval)
 			fastFollowUp = false
 		}
 	}
+}
+
+func jitteredHeartbeatDelay(base time.Duration) time.Duration {
+	if base <= 0 {
+		return base
+	}
+	maximumJitter := base / 10
+	if maximumJitter <= 0 {
+		return base
+	}
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return base
+	}
+	additional := time.Duration(binary.LittleEndian.Uint64(random[:]) % uint64(maximumJitter+1))
+	return base + additional
 }
 
 func waitForHeartbeat(ctx context.Context, delay time.Duration) bool {
