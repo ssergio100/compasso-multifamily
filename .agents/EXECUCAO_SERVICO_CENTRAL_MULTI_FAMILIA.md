@@ -52,7 +52,7 @@ inventário de hardware ou interfaces descontinuadas.
 | 1. Isolamento | concluído | migração preserva dados; duas famílias não acessam dados, efeitos, logs ou SSE entre si; suspensão local validada |
 | 2. Entrada autônoma | concluído | cadastro, confirmação, login, recuperação, dispositivo e exclusão passam no fluxo completo sem operador |
 | 3. Agente e carga | concluído | UUID, vínculo, rotação, erros e heartbeat eficiente passam nos testes |
-| 4. Abertura do piloto | pendente | suíte, restauração e carga de 500 agentes aprovadas antes da segunda família |
+| 4. Abertura do piloto | aguarda ambiente público | suíte, restauração e carga aprovadas; faltam valores e validação do serviço real antes da segunda família |
 
 ## Checklist de retomada
 
@@ -259,14 +259,39 @@ inventário de hardware ou interfaces descontinuadas.
   dois units de backup. SHA-256:
   `3dcf90684a9d6106309c3d31b731829c1695b951a43233a7ef9c85775ea54bf6`.
 
+### 2026-09-14 — auditoria final local e fronteira da abertura
+
+- O `admin_user_id` autenticado passa da sessão para a capacidade
+  `FamilyDevice`; ele não é aceito do corpo da requisição. Auditorias de
+  criação, política, rotina, senha, credencial, bônus e identidade, além das
+  atividades de comandos, registram esse autor nos detalhes duráveis.
+- A exclusão de dispositivo ganhou auditoria transacional antes do `DELETE`;
+  o evento funcional sobrevive com o autor, enquanto os dados pertencentes ao
+  dispositivo continuam seguindo o cascade previsto.
+- Testes ponta a ponta conferem que o autor gravado é exatamente o ID da conta
+  proprietária presente na sessão, tanto em `audit_event` quanto em
+  `activity`.
+- O exemplo de produção já exige `secure_cookies=true` e origem HTTPS absoluta;
+  o SMTP valida STARTTLS/TLS 1.2, e a identidade pode ser exigida depois da
+  atualização agente-primeiro. Esses mecanismos foram testados, mas seus
+  valores e funcionamento público dependem do domínio, relay e máquinas reais.
+- `make test` final aprovado: `go vet`, todos os pacotes Go, 22 testes da
+  interface local, typecheck/build da `admin-ui`, seis migrações do agente, 16
+  do servidor, backup/restauração, hardening, links e builds.
+- A segunda família continua proibida operacionalmente. Para liberar o piloto
+  ainda é necessário, no ambiente real: validar certificado/domínio e origem,
+  confirmar envio e recuperação pelo SMTP, atualizar os agentes existentes,
+  ativar `COMPASSO_REQUIRE_INSTALLATION_IDENTITY=true`, conferir `/metrics`,
+  timer/arquivo de backup e espaço disponível, e confirmar o e-mail da conta
+  migrada.
+
 ## Próximo passo exato
 
-Gravar o checkpoint operacional. Depois auditar o requisito de autoria das
-mutações administrativas e validar a configuração pública sem presumir valores
-de produção: HTTPS/origem/cookies, SMTP, identidade obrigatória, métricas,
-timer de backup e procedimento de segredos. Executar `make test` final e deixar
-explícito no diário o que depende do ambiente real antes de abrir a segunda
-família.
+Gravar o checkpoint final local. A próxima sessão não deve alterar novamente o
+produto para “resolver” a abertura: deve receber o destino público e os valores
+operacionais autorizados, implantar na ordem agente primeiro/servidor depois e
+executar o checklist real acima. Somente após essas evidências deve marcar o
+marco 4 e liberar a segunda família.
 
 ## Validação acumulada
 
@@ -298,3 +323,7 @@ família.
 - `scripts/test-backup-restore.sh` — aprovado sobre banco na versão 16;
   `scripts/test-security-packaging.sh` — aprovado com o timer diário.
 - pacote do servidor `0.1.0~pilot31` — montado e aprovado pelo teste do artefato.
+- autoria administrativa — aprovada em auditorias e atividades com o ID vindo
+  da sessão autenticada.
+- `make test` final — aprovado integralmente, agora incluindo o ensaio
+  automático de backup/restauração.

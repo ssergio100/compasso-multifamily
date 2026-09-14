@@ -14,6 +14,21 @@ type FamilyDevice struct {
 	store    *Store
 	familyID string
 	deviceID string
+	adminID  string
+}
+
+// AuthorizeAdminFamilyDevice binds the session administrator to every
+// mutation performed through the verified family/device capability.
+func (s *Store) AuthorizeAdminFamilyDevice(ctx context.Context, familyID, deviceID, adminID string) (FamilyDevice, error) {
+	if !validOpaqueIdentifier(adminID) {
+		return FamilyDevice{}, ErrNotFound
+	}
+	device, err := s.AuthorizeFamilyDevice(ctx, familyID, deviceID)
+	if err != nil {
+		return FamilyDevice{}, err
+	}
+	device.adminID = adminID
+	return device, nil
 }
 
 func (s *Store) AuthorizeFamilyDevice(ctx context.Context, familyID, deviceID string) (FamilyDevice, error) {
@@ -30,6 +45,10 @@ func (d FamilyDevice) authorize(ctx context.Context) error {
 		return ErrNotFound
 	}
 	return d.store.DeviceBelongsToFamily(ctx, d.familyID, d.deviceID)
+}
+
+func (d FamilyDevice) mutationContext(ctx context.Context) context.Context {
+	return WithAdminActor(ctx, d.adminID)
 }
 
 func (d FamilyDevice) Load(ctx context.Context) (Device, Policy, error) {
@@ -57,70 +76,70 @@ func (d FamilyDevice) Rename(ctx context.Context, name string, now time.Time) er
 	if err := d.authorize(ctx); err != nil {
 		return err
 	}
-	return d.store.RenameDevice(ctx, d.deviceID, name, now)
+	return d.store.RenameDevice(d.mutationContext(ctx), d.deviceID, name, now)
 }
 
 func (d FamilyDevice) UpdateIdentity(ctx context.Context, name, avatarKey string, now time.Time) error {
 	if err := d.authorize(ctx); err != nil {
 		return err
 	}
-	return d.store.UpdateDeviceIdentity(ctx, d.deviceID, name, avatarKey, now)
+	return d.store.UpdateDeviceIdentity(d.mutationContext(ctx), d.deviceID, name, avatarKey, now)
 }
 
-func (d FamilyDevice) Delete(ctx context.Context) error {
+func (d FamilyDevice) Delete(ctx context.Context, now time.Time) error {
 	if err := d.authorize(ctx); err != nil {
 		return err
 	}
-	return d.store.DeleteDevice(ctx, d.deviceID)
+	return d.store.DeleteDeviceWithAudit(d.mutationContext(ctx), d.deviceID, now)
 }
 
 func (d FamilyDevice) SaveQuotas(ctx context.Context, quotas [7]int64, warningMinutes int, now time.Time) error {
 	if err := d.authorize(ctx); err != nil {
 		return err
 	}
-	return d.store.SaveQuotas(ctx, d.deviceID, quotas, warningMinutes, now)
+	return d.store.SaveQuotas(d.mutationContext(ctx), d.deviceID, quotas, warningMinutes, now)
 }
 
 func (d FamilyDevice) SaveRoutine(ctx context.Context, routine Routine, now time.Time) (string, error) {
 	if err := d.authorize(ctx); err != nil {
 		return "", err
 	}
-	return d.store.SaveRoutine(ctx, d.deviceID, routine, now)
+	return d.store.SaveRoutine(d.mutationContext(ctx), d.deviceID, routine, now)
 }
 
 func (d FamilyDevice) DeleteRoutine(ctx context.Context, routineID string, now time.Time) error {
 	if err := d.authorize(ctx); err != nil {
 		return err
 	}
-	return d.store.DeleteRoutine(ctx, d.deviceID, routineID, now)
+	return d.store.DeleteRoutine(d.mutationContext(ctx), d.deviceID, routineID, now)
 }
 
 func (d FamilyDevice) SetLocalPassword(ctx context.Context, verifier string, now time.Time) error {
 	if err := d.authorize(ctx); err != nil {
 		return err
 	}
-	return d.store.SetLocalPassword(ctx, d.deviceID, verifier, now)
+	return d.store.SetLocalPassword(d.mutationContext(ctx), d.deviceID, verifier, now)
 }
 
 func (d FamilyDevice) IssueToken(ctx context.Context, now time.Time) (string, error) {
 	if err := d.authorize(ctx); err != nil {
 		return "", err
 	}
-	return d.store.IssueDeviceToken(ctx, d.deviceID, now)
+	return d.store.IssueDeviceToken(d.mutationContext(ctx), d.deviceID, now)
 }
 
 func (d FamilyDevice) RevokeToken(ctx context.Context, now time.Time) error {
 	if err := d.authorize(ctx); err != nil {
 		return err
 	}
-	return d.store.RevokeDeviceToken(ctx, d.deviceID, now)
+	return d.store.RevokeDeviceToken(d.mutationContext(ctx), d.deviceID, now)
 }
 
 func (d FamilyDevice) QueueRemoteBonus(ctx context.Context, seconds int64, now time.Time) (string, error) {
 	if err := d.authorize(ctx); err != nil {
 		return "", err
 	}
-	return d.store.QueueRemoteBonus(ctx, d.deviceID, seconds, now)
+	return d.store.QueueRemoteBonus(d.mutationContext(ctx), d.deviceID, seconds, now)
 }
 
 func (d FamilyDevice) RemoteBonusAcknowledged(ctx context.Context, operationID string) (bool, error) {
@@ -134,7 +153,7 @@ func (d FamilyDevice) QueueControlOperation(ctx context.Context, kind string, no
 	if err := d.authorize(ctx); err != nil {
 		return "", err
 	}
-	return d.store.QueueControlOperation(ctx, d.deviceID, kind, now)
+	return d.store.QueueControlOperation(d.mutationContext(ctx), d.deviceID, kind, now)
 }
 
 func (d FamilyDevice) ListActivities(ctx context.Context, limit int) ([]DeviceActivity, error) {

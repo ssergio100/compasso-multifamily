@@ -292,6 +292,15 @@ func TestFirstFamilyUsesPublicRegistrationInsteadOfInitialSetup(t *testing.T) {
 	if credentialResponse.Code != http.StatusCreated || familyCredential["device_token"] == "" {
 		t.Fatalf("family credential status=%d body=%s", credentialResponse.Code, credentialResponse.Body.String())
 	}
+	auditEvents, err := store.ListAudit(ctx, familyDevice.ID, 10)
+	if err != nil || len(auditEvents) < 2 {
+		t.Fatalf("administrative audit events=%+v err=%v", auditEvents, err)
+	}
+	for _, event := range auditEvents[:2] {
+		if !strings.Contains(event.Details, `"admin_user_id":"`+administrator.ID+`"`) {
+			t.Fatalf("administrative audit omitted actor: %+v", event)
+		}
+	}
 	accountResponse := accountFixture.requestJSON(http.MethodGet, "/api/v1/admin/account", nil, false)
 	var accountDetails map[string]string
 	decodeResponse(t, accountResponse, &accountDetails)
@@ -1191,7 +1200,12 @@ func TestAdministrativeActivitiesTellTheCommandLifecycle(t *testing.T) {
 	}
 
 	waiting := loadActivity()
-	if waiting.Status != "waiting_device" || step(waiting, "offered") != nil || waiting.Details["minutes"] != "15" {
+	admin, err := fixture.store.AdminByLogin(context.Background(), "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waiting.Status != "waiting_device" || step(waiting, "offered") != nil || waiting.Details["minutes"] != "15" ||
+		waiting.Details["admin_user_id"] != admin.ID {
 		t.Fatalf("waiting activity=%+v", waiting)
 	}
 	first, err := fixture.store.ReceiveHeartbeat(context.Background(), device.ID, protocol.HeartbeatRequest{

@@ -164,6 +164,7 @@ func nullableActivityTime(value sql.NullString) (*time.Time, error) {
 }
 
 func insertAdminActivity(ctx context.Context, tx *sql.Tx, id, deviceID, kind string, details map[string]string, now time.Time) error {
+	details = includeAdminActor(ctx, details)
 	encoded, err := json.Marshal(details)
 	if err != nil {
 		return err
@@ -193,6 +194,7 @@ var auditsWithDedicatedActivity = map[string]bool{
 func completedAdminAuditKind(kind string) bool { return !auditsWithDedicatedActivity[kind] }
 
 func insertCompletedAdminActivity(ctx context.Context, executor execer, id, deviceID, kind string, details map[string]string, now time.Time) error {
+	details = includeAdminActor(ctx, details)
 	encoded, err := json.Marshal(details)
 	if err != nil {
 		return err

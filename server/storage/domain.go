@@ -617,6 +617,30 @@ func (s *Store) DeleteDevice(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *Store) DeleteDeviceWithAudit(ctx context.Context, id string, now time.Time) error {
+	if !validOpaqueIdentifier(id) || now.IsZero() {
+		return ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var name string
+	if err := tx.QueryRowContext(ctx, `SELECT name FROM device WHERE id=?`, id).Scan(&name); errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if err := insertAudit(ctx, tx, id, "device_deleted", map[string]string{"name": name}, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM device WHERE id=?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) SaveQuotas(ctx context.Context, deviceID string, quotas [7]int64, warningMinutes int, now time.Time) error {
 	for _, seconds := range quotas {
 		if seconds < 0 || seconds > 24*60*60 {
@@ -1006,6 +1030,17 @@ func insertAudit(ctx context.Context, executor execer, deviceID, kind string, pa
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
+	}
+	if actor := adminActor(ctx); actor != "" {
+		var details map[string]interface{}
+		if err := json.Unmarshal(encoded, &details); err != nil || details == nil {
+			return errors.New("administrative audit payload must be an object")
+		}
+		details["admin_user_id"] = actor
+		encoded, err = json.Marshal(details)
+		if err != nil {
+			return err
+		}
 	}
 	_, err = executor.ExecContext(ctx, `
 		INSERT INTO audit_event(uuid, device_id, kind, origin, payload_json, created_at)

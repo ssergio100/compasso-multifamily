@@ -270,7 +270,10 @@ func (a *App) adminDevicesAPI(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "invalid request")
 			return
 		}
-		device, err := a.store.CreateDeviceForFamily(r.Context(), current.FamilyID, request.Name, request.AvatarKey, a.now())
+		device, err := a.store.CreateDeviceForFamily(
+			storage.WithAdminActor(r.Context(), current.AdminID),
+			current.FamilyID, request.Name, request.AvatarKey, a.now(),
+		)
 		if err != nil {
 			if errors.Is(err, storage.ErrDeviceLimit) {
 				writeJSONError(w, http.StatusConflict, "family device limit reached")
@@ -297,7 +300,7 @@ func (a *App) adminDeviceAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deviceID := pathParts[0]
-	device, err := a.store.AuthorizeFamilyDevice(r.Context(), current.FamilyID, deviceID)
+	device, err := a.store.AuthorizeAdminFamilyDevice(r.Context(), current.FamilyID, deviceID, current.AdminID)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			writeJSONError(w, http.StatusNotFound, "device not found")
@@ -406,7 +409,7 @@ func (a *App) adminDeviceRootAPI(w http.ResponseWriter, r *http.Request, current
 		if !a.requireCurrentAccountPassword(w, r, current, request.CurrentPassword) {
 			return
 		}
-		if err := device.Delete(r.Context()); err != nil {
+		if err := device.Delete(r.Context(), a.now()); err != nil {
 			writeAdminMutationError(w, err)
 			return
 		}
