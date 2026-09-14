@@ -71,7 +71,20 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request, details ma
 	authorization := r.Header.Get("Authorization")
 	ok := strings.HasPrefix(authorization, "Bearer ")
 	token := strings.TrimPrefix(authorization, "Bearer ")
-	if !ok || strings.ContainsAny(token, " \t\r\n") || a.store.AuthenticateDevice(r.Context(), deviceID, token) != nil {
+	if !ok || strings.ContainsAny(token, " \t\r\n") {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeJSONError(w, http.StatusUnauthorized, "invalid device credentials")
+		return
+	}
+	if err := a.store.AuthenticateDevice(r.Context(), deviceID, token); err != nil {
+		if errors.Is(err, storage.ErrFamilySuspended) {
+			details["rejection_reason"] = "A família deste computador está suspensa."
+			details["failure_stage"] = "autorizacao_da_familia"
+			writeJSONErrorResponse(w, http.StatusForbidden, protocol.ErrorResponse{
+				Error: "family suspended", Code: "family_suspended",
+			})
+			return
+		}
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeJSONError(w, http.StatusUnauthorized, "invalid device credentials")
 		return

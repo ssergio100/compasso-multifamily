@@ -1,6 +1,6 @@
 import type { View } from "./types";
 
-export type AppModal = "bonus" | "device" | "routine" | null;
+export type AppModal = "account" | "bonus" | "device" | "routine" | null;
 
 export interface AppNavigationState {
   compassoNavigation: true;
@@ -11,7 +11,7 @@ export interface AppNavigationState {
 }
 
 const views = new Set<View>(["now", "limits", "routines", "administration", "communication"]);
-const modals = new Set<AppModal>([null, "bonus", "device", "routine"]);
+const modals = new Set<AppModal>([null, "account", "bonus", "device", "routine"]);
 
 export function initialView(): View {
   const value = new URL(window.location.href).searchParams.get("section") as View | null;

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -48,6 +50,9 @@ func TestAdministrativeSessionCORSAndSecureCookie(t *testing.T) {
 		t.Fatalf("session bootstrap status=%d headers=%v", sessionResponse.Code, sessionResponse.Header())
 	}
 	loginCSRFTokenCookie := findCookie(t, sessionResponse.Result().Cookies(), loginCSRFCookie)
+	if loginCSRFTokenCookie.Path != "/api/v1" || !loginCSRFTokenCookie.HttpOnly || !loginCSRFTokenCookie.Secure {
+		t.Fatalf("unsafe login CSRF cookie: %+v", loginCSRFTokenCookie)
+	}
 	var anonymousSession adminSessionResponse
 	decodeResponse(t, sessionResponse, &anonymousSession)
 
@@ -85,6 +90,44 @@ func TestAdministrativeSessionCORSAndSecureCookie(t *testing.T) {
 	}
 }
 
+func TestAdministrativeLoginBlocksAfterTenFailures(t *testing.T) {
+	fixture := newWebFixture(t, false, time.Hour)
+	defer fixture.store.Close()
+	sessionResponse := fixture.requestJSON(http.MethodGet, "/api/v1/admin/session", nil, false)
+	var anonymousSession adminSessionResponse
+	decodeResponse(t, sessionResponse, &anonymousSession)
+	csrfCookie := findCookie(t, sessionResponse.Result().Cookies(), loginCSRFCookie)
+
+	requestLogin := func(password string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(adminLoginRequest{
+			Login: "admin", Password: password, CSRFToken: anonymousSession.CSRFToken,
+		})
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/session", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.AddCookie(csrfCookie)
+		response := httptest.NewRecorder()
+		fixture.app.ServeHTTP(response, request)
+		return response
+	}
+	for attempt := 1; attempt <= 10; attempt++ {
+		response := requestLogin("wrong-password")
+		want := http.StatusUnauthorized
+		if attempt == 10 {
+			want = http.StatusTooManyRequests
+		}
+		if response.Code != want {
+			t.Fatalf("login failure %d status=%d want=%d body=%s", attempt, response.Code, want, response.Body.String())
+		}
+	}
+	if response := requestLogin("secret"); response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") != "900" {
+		t.Fatalf("blocked correct login status=%d retry=%q", response.Code, response.Header().Get("Retry-After"))
+	}
+	fixture.app.now = func() time.Time { return fixture.now.Add(16 * time.Minute) }
+	if response := requestLogin("secret"); response.Code != http.StatusOK {
+		t.Fatalf("login remained blocked status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestSameHostAdministrativeOriginForLocalNetworkInstallation(t *testing.T) {
 	fixture := newWebFixture(t, false, time.Hour)
 	defer fixture.store.Close()
@@ -109,14 +152,18 @@ func TestSameHostAdministrativeOriginForLocalNetworkInstallation(t *testing.T) {
 	}
 }
 
-func TestInitialAdministratorIsConfiguredAfterInstallation(t *testing.T) {
+func TestFirstFamilyUsesPublicRegistrationInsteadOfInitialSetup(t *testing.T) {
 	ctx := context.Background()
 	store, err := serverstorage.Open(ctx, filepath.Join(t.TempDir(), "server.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	application, err := New(store, false, time.Hour, time.Minute, 3*time.Second, "")
+	mailer := &recordingAccountMailer{}
+	application, err := New(
+		store, false, time.Hour, time.Minute, 3*time.Second, "https://admin.example",
+		WithAccountMailer(mailer),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,48 +172,145 @@ func TestInitialAdministratorIsConfiguredAfterInstallation(t *testing.T) {
 	sessionRequest := httptest.NewRequest(http.MethodGet, "/api/v1/admin/session", nil)
 	sessionResponse := httptest.NewRecorder()
 	application.ServeHTTP(sessionResponse, sessionRequest)
-	var setupSession adminSessionResponse
-	decodeResponse(t, sessionResponse, &setupSession)
-	if !setupSession.SetupRequired || setupSession.Authenticated {
-		t.Fatalf("fresh installation session=%+v", setupSession)
+	var anonymousSession adminSessionResponse
+	decodeResponse(t, sessionResponse, &anonymousSession)
+	if anonymousSession.SetupRequired || anonymousSession.Authenticated {
+		t.Fatalf("fresh installation session=%+v", anonymousSession)
 	}
-	setupCSRFCookie := findCookie(t, sessionResponse.Result().Cookies(), loginCSRFCookie)
+	loginCSRFCookie := findCookie(t, sessionResponse.Result().Cookies(), loginCSRFCookie)
 
-	setupBody, _ := json.Marshal(adminSetupRequest{
-		Login: "sergio", Password: "senha-memoravel", PasswordConfirmation: "senha-memoravel",
-		CSRFToken: setupSession.CSRFToken,
+	registrationBody, _ := json.Marshal(registerAccountRequest{
+		FamilyName: "Família Silva", Email: "sergio@example.com",
+		Password: "senha-memoravel", PasswordConfirmation: "senha-memoravel",
+		CSRFToken: anonymousSession.CSRFToken,
 	})
-	setupRequest := httptest.NewRequest(http.MethodPost, "/api/v1/admin/setup", bytes.NewReader(setupBody))
-	setupRequest.Header.Set("Content-Type", "application/json")
-	setupRequest.AddCookie(setupCSRFCookie)
-	setupResponse := httptest.NewRecorder()
-	application.ServeHTTP(setupResponse, setupRequest)
-	if setupResponse.Code != http.StatusCreated {
-		t.Fatalf("initial setup status=%d body=%s", setupResponse.Code, setupResponse.Body.String())
+	registrationRequest := httptest.NewRequest(http.MethodPost, "/api/v1/account/register", bytes.NewReader(registrationBody))
+	registrationRequest.Header.Set("Content-Type", "application/json")
+	registrationRequest.AddCookie(loginCSRFCookie)
+	registrationResponse := httptest.NewRecorder()
+	application.ServeHTTP(registrationResponse, registrationRequest)
+	if registrationResponse.Code != http.StatusAccepted || len(mailer.messages) != 1 {
+		t.Fatalf("registration status=%d messages=%+v body=%s", registrationResponse.Code, mailer.messages, registrationResponse.Body.String())
 	}
-	var authenticatedSession adminSessionResponse
-	decodeResponse(t, setupResponse, &authenticatedSession)
-	if !authenticatedSession.Authenticated || authenticatedSession.Login != "sergio" || authenticatedSession.SetupRequired {
-		t.Fatalf("created session=%+v", authenticatedSession)
+	if _, err := store.AdminByLogin(ctx, "sergio@example.com"); !errors.Is(err, serverstorage.ErrNotFound) {
+		t.Fatalf("unconfirmed account could log in: %v", err)
 	}
-	findCookie(t, setupResponse.Result().Cookies(), sessionCookieName)
-
-	administrator, err := store.AdminByLogin(ctx, "sergio")
+	token := accountTokenFromMessage(t, mailer.messages[0])
+	confirmationBody, _ := json.Marshal(tokenAccountRequest{Token: token})
+	confirmationRequest := httptest.NewRequest(http.MethodPost, "/api/v1/account/confirm", bytes.NewReader(confirmationBody))
+	confirmationRequest.Header.Set("Content-Type", "application/json")
+	confirmationResponse := httptest.NewRecorder()
+	application.ServeHTTP(confirmationResponse, confirmationRequest)
+	if confirmationResponse.Code != http.StatusOK {
+		t.Fatalf("confirmation status=%d body=%s", confirmationResponse.Code, confirmationResponse.Body.String())
+	}
+	administrator, err := store.AdminByLogin(ctx, "sergio@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
 	passwordMatches, err := localauth.VerifyPassword("senha-memoravel", administrator.PasswordHash)
-	if err != nil || !passwordMatches {
+	if err != nil || !passwordMatches || !administrator.EmailVerified || administrator.FamilyName != "Família Silva" {
 		t.Fatalf("configured password was not stored securely: matches=%t err=%v", passwordMatches, err)
 	}
+	duplicateRequest := httptest.NewRequest(http.MethodPost, "/api/v1/account/register", bytes.NewReader(registrationBody))
+	duplicateRequest.Header.Set("Content-Type", "application/json")
+	duplicateRequest.AddCookie(loginCSRFCookie)
+	duplicateResponse := httptest.NewRecorder()
+	application.ServeHTTP(duplicateResponse, duplicateRequest)
+	if duplicateResponse.Code != http.StatusAccepted || len(mailer.messages) != 1 || duplicateResponse.Body.String() != registrationResponse.Body.String() {
+		t.Fatalf("existing account was enumerated: status=%d messages=%d body=%s", duplicateResponse.Code, len(mailer.messages), duplicateResponse.Body.String())
+	}
 
-	secondSetupRequest := httptest.NewRequest(http.MethodPost, "/api/v1/admin/setup", bytes.NewReader(setupBody))
-	secondSetupRequest.Header.Set("Content-Type", "application/json")
-	secondSetupRequest.AddCookie(setupCSRFCookie)
-	secondSetupResponse := httptest.NewRecorder()
-	application.ServeHTTP(secondSetupResponse, secondSetupRequest)
-	if secondSetupResponse.Code != http.StatusConflict {
-		t.Fatalf("second setup status=%d body=%s", secondSetupResponse.Code, secondSetupResponse.Body.String())
+	resetBody, _ := json.Marshal(emailAccountRequest{
+		Email: "sergio@example.com", CSRFToken: anonymousSession.CSRFToken,
+	})
+	resetRequest := httptest.NewRequest(http.MethodPost, "/api/v1/account/password-reset", bytes.NewReader(resetBody))
+	resetRequest.Header.Set("Content-Type", "application/json")
+	resetRequest.AddCookie(loginCSRFCookie)
+	resetResponse := httptest.NewRecorder()
+	application.ServeHTTP(resetResponse, resetRequest)
+	if resetResponse.Code != http.StatusAccepted || len(mailer.messages) != 2 {
+		t.Fatalf("reset request status=%d messages=%d body=%s", resetResponse.Code, len(mailer.messages), resetResponse.Body.String())
+	}
+	resetToken := accountTokenFromMessage(t, mailer.messages[1])
+	resetConfirmationBody, _ := json.Marshal(resetPasswordRequest{
+		Token: resetToken, Password: "nova-senha-memoravel", PasswordConfirmation: "nova-senha-memoravel",
+	})
+	resetConfirmationRequest := httptest.NewRequest(http.MethodPost, "/api/v1/account/password-reset/confirm", bytes.NewReader(resetConfirmationBody))
+	resetConfirmationRequest.Header.Set("Content-Type", "application/json")
+	resetConfirmationResponse := httptest.NewRecorder()
+	application.ServeHTTP(resetConfirmationResponse, resetConfirmationRequest)
+	if resetConfirmationResponse.Code != http.StatusOK {
+		t.Fatalf("reset confirmation status=%d body=%s", resetConfirmationResponse.Code, resetConfirmationResponse.Body.String())
+	}
+
+	accountFixture := &webFixture{app: application, store: store, now: application.now()}
+	accountFixture.loginAs(t, "sergio@example.com", "nova-senha-memoravel")
+	emailChange := accountFixture.requestJSON(http.MethodPost, "/api/v1/admin/account/email", changeAccountEmailRequest{
+		CurrentPassword: "nova-senha-memoravel", Email: "novo@example.com",
+	}, true)
+	if emailChange.Code != http.StatusAccepted || len(mailer.messages) != 3 {
+		t.Fatalf("email change status=%d messages=%d body=%s", emailChange.Code, len(mailer.messages), emailChange.Body.String())
+	}
+	emailToken := accountTokenFromMessage(t, mailer.messages[2])
+	emailConfirmation := accountFixture.requestJSON(http.MethodPost, "/api/v1/account/email/confirm", tokenAccountRequest{Token: emailToken}, false)
+	if emailConfirmation.Code != http.StatusOK {
+		t.Fatalf("email confirmation status=%d body=%s", emailConfirmation.Code, emailConfirmation.Body.String())
+	}
+	if stale := accountFixture.requestJSON(http.MethodGet, "/api/v1/admin/account", nil, false); stale.Code != http.StatusUnauthorized {
+		t.Fatalf("email change kept old session status=%d", stale.Code)
+	}
+	accountFixture.sessionCookie = nil
+	accountFixture.loginAs(t, "novo@example.com", "nova-senha-memoravel")
+	passwordChange := accountFixture.requestJSON(http.MethodPut, "/api/v1/admin/account/password", changeAccountPasswordRequest{
+		CurrentPassword: "nova-senha-memoravel", Password: "senha-final-memoravel", PasswordConfirmation: "senha-final-memoravel",
+	}, true)
+	if passwordChange.Code != http.StatusOK {
+		t.Fatalf("password change status=%d body=%s", passwordChange.Code, passwordChange.Body.String())
+	}
+	accountFixture.sessionCookie = nil
+	accountFixture.loginAs(t, "novo@example.com", "senha-final-memoravel")
+	deviceResponse := accountFixture.requestJSON(http.MethodPost, "/api/v1/admin/devices", createAdminDeviceRequest{
+		Name: "Computador da família", AvatarKey: "cat_bow",
+	}, true)
+	var familyDevice adminDeviceResponse
+	decodeResponse(t, deviceResponse, &familyDevice)
+	if deviceResponse.Code != http.StatusCreated || familyDevice.ID == "" {
+		t.Fatalf("family device creation status=%d body=%s", deviceResponse.Code, deviceResponse.Body.String())
+	}
+	credentialResponse := accountFixture.requestJSON(
+		http.MethodPost, "/api/v1/admin/devices/"+familyDevice.ID+"/token",
+		sensitiveDeviceRequest{CurrentPassword: "senha-final-memoravel"}, true,
+	)
+	var familyCredential map[string]string
+	decodeResponse(t, credentialResponse, &familyCredential)
+	if credentialResponse.Code != http.StatusCreated || familyCredential["device_token"] == "" {
+		t.Fatalf("family credential status=%d body=%s", credentialResponse.Code, credentialResponse.Body.String())
+	}
+	accountResponse := accountFixture.requestJSON(http.MethodGet, "/api/v1/admin/account", nil, false)
+	var accountDetails map[string]string
+	decodeResponse(t, accountResponse, &accountDetails)
+	if accountResponse.Code != http.StatusOK || accountDetails["family_name"] != "Família Silva" || accountDetails["email"] != "novo@example.com" {
+		t.Fatalf("account details status=%d values=%+v", accountResponse.Code, accountDetails)
+	}
+	deleteResponse := accountFixture.requestJSON(http.MethodDelete, "/api/v1/admin/account", deleteAccountRequest{
+		CurrentPassword: "senha-final-memoravel", FamilyName: "Família Silva",
+	}, true)
+	if deleteResponse.Code != http.StatusNoContent {
+		t.Fatalf("account deletion status=%d body=%s", deleteResponse.Code, deleteResponse.Body.String())
+	}
+	if _, err := store.AdminByID(ctx, administrator.ID); !errors.Is(err, serverstorage.ErrNotFound) {
+		t.Fatalf("deleted account remains: %v", err)
+	}
+	if _, _, err := store.LoadDevice(ctx, familyDevice.ID); !errors.Is(err, serverstorage.ErrNotFound) {
+		t.Fatalf("deleted family device remains: %v", err)
+	}
+
+	legacySetupRequest := httptest.NewRequest(http.MethodPost, "/api/v1/admin/setup", bytes.NewReader(registrationBody))
+	legacySetupResponse := httptest.NewRecorder()
+	application.ServeHTTP(legacySetupResponse, legacySetupRequest)
+	if legacySetupResponse.Code != http.StatusNotFound {
+		t.Fatalf("legacy setup remains public: status=%d body=%s", legacySetupResponse.Code, legacySetupResponse.Body.String())
 	}
 }
 
@@ -233,7 +377,11 @@ func TestAdministrativeJSONAPIWorkflow(t *testing.T) {
 		t.Fatalf("password response status=%d body=%s", passwordResponse.Code, passwordResponse.Body.String())
 	}
 
-	tokenResponse := fixture.requestJSON(http.MethodPost, devicePath+"/token", nil, true)
+	wrongTokenResponse := fixture.requestJSON(http.MethodPost, devicePath+"/token", sensitiveDeviceRequest{CurrentPassword: "wrong"}, true)
+	if wrongTokenResponse.Code != http.StatusForbidden {
+		t.Fatalf("issue token with wrong account password status=%d body=%s", wrongTokenResponse.Code, wrongTokenResponse.Body.String())
+	}
+	tokenResponse := fixture.requestJSON(http.MethodPost, devicePath+"/token", sensitiveDeviceRequest{CurrentPassword: "secret"}, true)
 	if tokenResponse.Code != http.StatusCreated {
 		t.Fatalf("issue token status=%d body=%s", tokenResponse.Code, tokenResponse.Body.String())
 	}
@@ -307,7 +455,14 @@ func TestAdministrativeJSONAPIWorkflow(t *testing.T) {
 	if deleteRoutineResponse.Code != http.StatusNoContent {
 		t.Fatalf("delete routine status=%d", deleteRoutineResponse.Code)
 	}
-	revokeTokenResponse := fixture.requestJSON(http.MethodDelete, devicePath+"/token", nil, true)
+	wrongRevokeResponse := fixture.requestJSON(http.MethodDelete, devicePath+"/token", sensitiveDeviceRequest{CurrentPassword: "wrong"}, true)
+	if wrongRevokeResponse.Code != http.StatusForbidden {
+		t.Fatalf("revoke token with wrong account password status=%d body=%s", wrongRevokeResponse.Code, wrongRevokeResponse.Body.String())
+	}
+	if err := fixture.store.AuthenticateDevice(context.Background(), createdDevice.ID, issuedToken["device_token"]); err != nil {
+		t.Fatalf("wrong account password revoked token: %v", err)
+	}
+	revokeTokenResponse := fixture.requestJSON(http.MethodDelete, devicePath+"/token", sensitiveDeviceRequest{CurrentPassword: "secret"}, true)
 	if revokeTokenResponse.Code != http.StatusNoContent {
 		t.Fatalf("revoke token status=%d", revokeTokenResponse.Code)
 	}
@@ -315,7 +470,14 @@ func TestAdministrativeJSONAPIWorkflow(t *testing.T) {
 	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), "PC do quarto") {
 		t.Fatalf("list devices status=%d body=%s", listResponse.Code, listResponse.Body.String())
 	}
-	deleteDeviceResponse := fixture.requestJSON(http.MethodDelete, devicePath, nil, true)
+	wrongDeleteResponse := fixture.requestJSON(http.MethodDelete, devicePath, sensitiveDeviceRequest{CurrentPassword: "wrong"}, true)
+	if wrongDeleteResponse.Code != http.StatusForbidden {
+		t.Fatalf("delete device with wrong account password status=%d body=%s", wrongDeleteResponse.Code, wrongDeleteResponse.Body.String())
+	}
+	if _, _, err := fixture.store.LoadDevice(context.Background(), createdDevice.ID); err != nil {
+		t.Fatalf("wrong account password deleted device: %v", err)
+	}
+	deleteDeviceResponse := fixture.requestJSON(http.MethodDelete, devicePath, sensitiveDeviceRequest{CurrentPassword: "secret"}, true)
 	if deleteDeviceResponse.Code != http.StatusNoContent {
 		t.Fatalf("delete device status=%d", deleteDeviceResponse.Code)
 	}
@@ -1159,10 +1321,75 @@ func TestAdministrativeSessionIsRevalidatedAgainstDurableIdentity(t *testing.T) 
 	}
 }
 
+func TestSuspendedFamilyHeartbeatIsForbiddenWithoutLeakingCredentials(t *testing.T) {
+	fixture := newWebFixture(t, false, time.Hour)
+	defer fixture.store.Close()
+	ctx := context.Background()
+	device, err := fixture.store.CreateDevice(ctx, "Suspenso", fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := fixture.store.IssueDeviceToken(ctx, device.ID, fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := fixture.store.AdminByLogin(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := fixture.store.SetFamilyState(ctx, admin.FamilyID, "suspended", fixture.now.Add(time.Minute)); err != nil || !changed {
+		t.Fatalf("suspend family changed=%t err=%v", changed, err)
+	}
+	payload, _ := json.Marshal(protocol.HeartbeatRequest{LocalDate: "2026-08-10"})
+	requestHeartbeat := func(credential string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, protocol.HeartbeatPath, bytes.NewReader(payload))
+		request.Header.Set(deviceIDHeader, device.ID)
+		request.Header.Set("Authorization", "Bearer "+credential)
+		request.Header.Set(protocol.VersionHeader, protocol.CurrentProtocolVersion)
+		response := httptest.NewRecorder()
+		fixture.app.ServeHTTP(response, request)
+		return response
+	}
+	wrong := requestHeartbeat(strings.Repeat("x", 43))
+	if wrong.Code != http.StatusUnauthorized || strings.Contains(wrong.Body.String(), "suspended") {
+		t.Fatalf("invalid credential leaked family state: status=%d body=%s", wrong.Code, wrong.Body.String())
+	}
+	response := requestHeartbeat(token)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"family_suspended"`) {
+		t.Fatalf("suspended heartbeat status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 type testContext interface {
 	Helper()
 	TempDir() string
 	Fatal(...interface{})
+}
+
+type recordingAccountMailer struct {
+	messages []AccountMessage
+}
+
+func (*recordingAccountMailer) Available() bool { return true }
+
+func (m *recordingAccountMailer) SendAccountMessage(_ context.Context, message AccountMessage) error {
+	m.messages = append(m.messages, message)
+	return nil
+}
+
+func accountTokenFromMessage(t *testing.T, message AccountMessage) string {
+	t.Helper()
+	for _, field := range strings.Fields(message.Text) {
+		if !strings.HasPrefix(field, "https://") && !strings.HasPrefix(field, "http://") {
+			continue
+		}
+		link, err := url.Parse(field)
+		if err == nil && link.Query().Get("token") != "" {
+			return link.Query().Get("token")
+		}
+	}
+	t.Fatalf("account token not found in message %+v", message)
+	return ""
 }
 
 func newWebFixture(t testContext, secureCookies bool, sessionLifetime time.Duration) *webFixture {
@@ -1192,6 +1419,10 @@ func newWebFixture(t testContext, secureCookies bool, sessionLifetime time.Durat
 }
 
 func (f *webFixture) login(t *testing.T) {
+	f.loginAs(t, "admin", "secret")
+}
+
+func (f *webFixture) loginAs(t *testing.T, login, password string) {
 	t.Helper()
 	bootstrapResponse := f.requestJSON(http.MethodGet, "/api/v1/admin/session", nil, false)
 	var anonymousSession adminSessionResponse
@@ -1199,7 +1430,7 @@ func (f *webFixture) login(t *testing.T) {
 	loginCSRFTokenCookie := findCookie(t, bootstrapResponse.Result().Cookies(), loginCSRFCookie)
 
 	loginBody, _ := json.Marshal(adminLoginRequest{
-		Login: "admin", Password: "secret", CSRFToken: anonymousSession.CSRFToken,
+		Login: login, Password: password, CSRFToken: anonymousSession.CSRFToken,
 	})
 	loginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/admin/session", bytes.NewReader(loginBody))
 	loginRequest.Header.Set("Content-Type", "application/json")

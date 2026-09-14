@@ -15,9 +15,12 @@ import (
 type Admin struct {
 	ID             string
 	Login          string
+	Email          string
+	EmailVerified  bool
 	PasswordHash   string
 	Active         bool
 	FamilyID       string
+	FamilyName     string
 	FamilyState    string
 	AuthGeneration int64
 }
@@ -209,14 +212,18 @@ func (s *Store) AdminByID(ctx context.Context, id string) (Admin, error) {
 
 func (s *Store) loadAdmin(ctx context.Context, predicate, value string) (Admin, error) {
 	var admin Admin
-	var active int
+	var active, emailVerified int
 	err := s.db.QueryRowContext(ctx, fmt.Sprintf(
-		`SELECT u.id, u.login, u.password_hash, u.active, m.family_id, f.state, u.auth_generation
+		`SELECT u.id, u.login, COALESCE(u.email, ''), u.email_verified_at IS NOT NULL,
+		        u.password_hash, u.active, m.family_id, f.name, f.state, u.auth_generation
 		 FROM admin_user u
 		 JOIN family_member m ON m.admin_user_id=u.id AND m.role='owner'
 		 JOIN family f ON f.id=m.family_id
 		 WHERE %s`, predicate), value,
-	).Scan(&admin.ID, &admin.Login, &admin.PasswordHash, &active, &admin.FamilyID, &admin.FamilyState, &admin.AuthGeneration)
+	).Scan(
+		&admin.ID, &admin.Login, &admin.Email, &emailVerified, &admin.PasswordHash,
+		&active, &admin.FamilyID, &admin.FamilyName, &admin.FamilyState, &admin.AuthGeneration,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Admin{}, ErrNotFound
 	}
@@ -224,6 +231,7 @@ func (s *Store) loadAdmin(ctx context.Context, predicate, value string) (Admin, 
 		return Admin{}, fmt.Errorf("load administrator: %w", err)
 	}
 	admin.Active = active != 0
+	admin.EmailVerified = emailVerified != 0
 	return admin, nil
 }
 
@@ -280,8 +288,9 @@ func (s *Store) CreateFamilyOwner(ctx context.Context, familyName, email, passwo
 		return Admin{}, err
 	}
 	return Admin{
-		ID: adminID, Login: email, PasswordHash: passwordHash, Active: true,
-		FamilyID: familyID, FamilyState: "active", AuthGeneration: 1,
+		ID: adminID, Login: email, Email: email, EmailVerified: true,
+		PasswordHash: passwordHash, Active: true, FamilyID: familyID,
+		FamilyName: familyName, FamilyState: "active", AuthGeneration: 1,
 	}, nil
 }
 

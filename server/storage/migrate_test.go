@@ -122,7 +122,7 @@ func openDatabaseAtMigrationFourteen(t *testing.T, databasePath string) *sql.DB 
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || strings.HasPrefix(entry.Name(), "0015_") {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), "0015_") || strings.HasPrefix(entry.Name(), "0016_") {
 			continue
 		}
 		script, err := migrationFiles.ReadFile("migrations/" + entry.Name())
@@ -151,7 +151,7 @@ func TestMigrationElevenAddsAndBackfillsVisualIdentities(t *testing.T) {
 		CREATE TABLE routine (id TEXT PRIMARY KEY, device_id TEXT NOT NULL, name TEXT NOT NULL);
 		-- This focused fixture exercises migration 11 only. Version 12 depends on
 		-- the complete command/activity schema built by the earlier migrations.
-		INSERT INTO schema_migrations(version) VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(12),(15);
+		INSERT INTO schema_migrations(version) VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(12),(15),(16);
 		INSERT INTO device(id,name) VALUES ('device-1','PC antigo');
 		INSERT INTO routine(id,device_id,name) VALUES ('sleep','device-1','Hora de dormir'),('reading','device-1','Leitura');
 	`); err != nil {
@@ -246,7 +246,7 @@ func TestMigrationFourteenAddsChickToAnExistingCollection(t *testing.T) {
 			))
 		);
 		INSERT INTO schema_migrations(version)
-		VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12),(13),(15);
+		VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12),(13),(15),(16);
 		INSERT INTO device(id, name, avatar_key)
 		VALUES ('existing-device', 'Avatar existente', 'cat_bow');
 		PRAGMA user_version=13;

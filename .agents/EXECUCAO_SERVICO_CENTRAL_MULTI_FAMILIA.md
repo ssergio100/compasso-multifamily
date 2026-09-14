@@ -50,7 +50,7 @@ inventário de hardware ou interfaces descontinuadas.
 | --- | --- | --- |
 | 0. Preparação | concluído | branch criada e diário versionável iniciado |
 | 1. Isolamento | concluído | migração preserva dados; duas famílias não acessam dados, efeitos, logs ou SSE entre si; suspensão local validada |
-| 2. Entrada autônoma | em andamento | cadastro, confirmação, login, recuperação, exclusão e limite de cinco dispositivos funcionam sem operador |
+| 2. Entrada autônoma | concluído | cadastro, confirmação, login, recuperação, dispositivo e exclusão passam no fluxo completo sem operador |
 | 3. Agente e carga | pendente | UUID, vínculo, rotação, erros e heartbeat eficiente passam nos testes |
 | 4. Abertura do piloto | pendente | suíte, restauração e carga de 500 agentes aprovadas antes da segunda família |
 
@@ -126,13 +126,47 @@ inventário de hardware ou interfaces descontinuadas.
   que ainda criavam dispositivo em banco vazio. O helper compartilhado agora
   cria a família proprietária antes do dispositivo; os quatro testes passaram.
 
+### 2026-09-13 — marco 2 concluído: entrada autônoma
+
+- A migração `0016_pending_account.sql` acrescenta somente o nome temporário da
+  família à conta pendente e o cascade necessário para excluir a família sobre
+  a coluna adicionada em SQLite. O esquema atual passa a ser a versão 16.
+- Cadastro cria apenas identidade inativa e token de confirmação com hash. A
+  família e a associação proprietária nascem juntas ao confirmar; o limite de
+  100 famílias é verificado nessa mesma transação. Pendências vencidas são
+  removidas por manutenção horária e também antes de novo cadastro/reenvio.
+- Foram implementados confirmação e reenvio em 24 horas, recuperação em 30
+  minutos, troca de senha, troca confirmada de e-mail e exclusão da própria
+  família com senha atual e nome exato. Tokens são aleatórios, de uso único e
+  persistidos apenas como SHA-256; mudanças de credencial invalidam sessões.
+- O antigo `/api/v1/admin/setup` foi removido. A `admin-ui` vigente oferece
+  Criar conta, confirmar, recuperar senha e Minha conta. Um proprietário novo
+  cria um dispositivo, revela seu token uma vez e exclui família e dispositivo
+  sem intervenção humana no teste ponta a ponta.
+- Cadastro, reenvio e recuperação respondem sem enumerar contas. Limites em
+  memória cobrem e-mail, origem de rede, conclusão por token e login; dez
+  falhas de login em 15 minutos bloqueiam o login por 15 minutos. O mapa de
+  limites elimina chaves inativas para não crescer indefinidamente.
+- Emissão/revogação de token e exclusão de dispositivo agora exigem a senha
+  atual além da sessão e CSRF. Testes demonstram que senha incorreta não gira
+  credencial nem exclui cadastro.
+- Adicionado envio SMTP substituível, com STARTTLS e TLS 1.2 mínimos. Sem SMTP,
+  apenas os fluxos que dependem de e-mail respondem `503`; endereço, remetente
+  e credenciais são fornecidos por ambiente e a operação está documentada.
+- Corrigido o escopo do cookie anti-CSRF anônimo para `/api/v1`, permitindo que
+  o navegador o envie ao cadastro sem ampliar o cookie autenticado, que segue
+  restrito a `/api/v1/admin`.
+- Fechada uma pendência da suspensão: depois de validar o token do agente, o
+  heartbeat de família suspensa responde `403 family_suspended`; token inválido
+  continua recebendo `401` sem revelar o estado da família.
+
 ## Próximo passo exato
 
-Implementar a persistência e a API do cadastro pendente: normalizar e-mail,
-validar senha, armazenar apenas o hash do token de confirmação com expiração de
-24 horas e criar família/proprietário atomicamente somente ao confirmar. Usar
-uma interface de envio de e-mail substituível nos testes e aplicar limites de
-taxa antes de expor a tela na `admin-ui`.
+Criar a migração do SQLite local para UUID v4 e fingerprint SHA-256 do token,
+preservando política, uso e eventos de um vínculo antigo. Em seguida fazer o
+cliente enviar o UUID e a capacidade no heartbeat, com testes de atualização,
+troca apenas de token e troca de servidor/dispositivo, antes de alterar a
+aceitação no servidor.
 
 ## Validação acumulada
 
@@ -145,3 +179,6 @@ taxa antes de expor a tela na `admin-ui`.
 - `make test` — aprovado integralmente ao concluir o marco 1 (Go, 22 testes da
   interface local, `admin-ui`, 15 migrações do servidor, hardening,
   documentação e builds).
+- `make test` — aprovado integralmente ao concluir o marco 2 (todos os pacotes
+  Go, 22 testes da interface local, typecheck/build da `admin-ui`, 16 migrações,
+  hardening, links de documentação e builds dos três binários).

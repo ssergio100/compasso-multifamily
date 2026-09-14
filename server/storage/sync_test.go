@@ -27,16 +27,32 @@ func TestDeviceAuthenticationAndDuplicateHeartbeatAreIdempotent(t *testing.T) {
 	if err := store.AuthenticateDevice(ctx, device.ID, token); err != nil {
 		t.Fatalf("valid device credential rejected: %v", err)
 	}
+	admin, err := store.AdminByLogin(ctx, "test-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.SetFamilyState(ctx, admin.FamilyID, "suspended", now.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AuthenticateDevice(ctx, device.ID, "wrong"); !errors.Is(err, ErrInvalidDeviceCredentials) {
+		t.Fatalf("suspended family exposed before credential verification: %v", err)
+	}
+	if err := store.AuthenticateDevice(ctx, device.ID, token); !errors.Is(err, ErrFamilySuspended) {
+		t.Fatalf("suspended family credential error=%v", err)
+	}
+	if _, _, err := store.SetFamilyState(ctx, admin.FamilyID, "active", now.Add(2*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.AuthenticateDevice(ctx, device.ID, "wrong"); !errors.Is(err, ErrInvalidDeviceCredentials) {
 		t.Fatalf("wrong credential error=%v", err)
 	}
-	if err := store.RevokeDeviceToken(ctx, device.ID, now.Add(time.Millisecond)); err != nil {
+	if err := store.RevokeDeviceToken(ctx, device.ID, now.Add(3*time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.AuthenticateDevice(ctx, device.ID, token); !errors.Is(err, ErrInvalidDeviceCredentials) {
 		t.Fatalf("revoked credential error=%v", err)
 	}
-	token, err = store.IssueDeviceToken(ctx, device.ID, now.Add(2*time.Millisecond))
+	token, err = store.IssueDeviceToken(ctx, device.ID, now.Add(4*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}

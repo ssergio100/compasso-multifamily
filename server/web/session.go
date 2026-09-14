@@ -70,6 +70,16 @@ func (s *sessionStore) delete(token string) {
 	delete(s.values, token)
 }
 
+func (s *sessionStore) deleteByAdmin(adminID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for token, value := range s.values {
+		if value.AdminID == adminID {
+			delete(s.values, token)
+		}
+	}
+}
+
 func randomToken() (string, error) {
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {

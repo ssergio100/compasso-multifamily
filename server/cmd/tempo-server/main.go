@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ssergio100/compasso/agent/localauth"
+	"github.com/ssergio100/compasso/server/accountmail"
 	"github.com/ssergio100/compasso/server/config"
 	"github.com/ssergio100/compasso/server/storage"
 	"github.com/ssergio100/compasso/server/web"
@@ -110,14 +111,19 @@ func run(configPath string, logger *log.Logger) error {
 			logger.Printf("initial administrator created login=%s", bootstrapLogin)
 		}
 	}
+	webOptions, err := accountMailerOptions(os.Getenv)
+	if err != nil {
+		return err
+	}
 	application, err := web.New(
 		store, settings.SecureCookies, settings.SessionLifetime, settings.OnlineTimeout,
-		settings.HeartbeatInterval, settings.AdminOrigin,
+		settings.HeartbeatInterval, settings.AdminOrigin, webOptions...,
 	)
 	if err != nil {
 		return err
 	}
 	application.StartOfflineDetector(ctx)
+	application.StartAccountMaintenance(ctx)
 	server := &http.Server{
 		Addr: settings.ListenAddress, Handler: application,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
@@ -139,6 +145,24 @@ func run(configPath string, logger *log.Logger) error {
 		return err
 	}
 	return <-shutdownDone
+}
+
+func accountMailerOptions(environmentValue func(string) string) ([]web.Option, error) {
+	address := strings.TrimSpace(environmentValue("TEMPO_SMTP_ADDRESS"))
+	username := environmentValue("TEMPO_SMTP_USERNAME")
+	password := environmentValue("TEMPO_SMTP_PASSWORD")
+	from := strings.TrimSpace(environmentValue("TEMPO_SMTP_FROM"))
+	if address == "" && username == "" && password == "" && from == "" {
+		return nil, nil
+	}
+	if address == "" || from == "" {
+		return nil, errors.New("TEMPO_SMTP_ADDRESS and TEMPO_SMTP_FROM are required when account e-mail is configured")
+	}
+	mailer, err := accountmail.NewSMTP(address, username, password, from)
+	if err != nil {
+		return nil, fmt.Errorf("configure account e-mail: %w", err)
+	}
+	return []web.Option{web.WithAccountMailer(mailer)}, nil
 }
 
 func loadBootstrapAdministratorPassword(environmentPassword, passwordFilePath string) (string, error) {

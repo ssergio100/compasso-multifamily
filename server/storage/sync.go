@@ -20,6 +20,7 @@ import (
 
 var (
 	ErrInvalidDeviceCredentials = errors.New("invalid device credentials")
+	ErrFamilySuspended          = errors.New("family suspended")
 	ErrRevisionAhead            = errors.New("client policy revision is ahead of server")
 )
 
@@ -98,8 +99,12 @@ func (s *Store) AuthenticateDevice(ctx context.Context, deviceID, token string) 
 	if !validOpaqueIdentifier(deviceID) || len(token) != 43 {
 		return ErrInvalidDeviceCredentials
 	}
-	var stored string
-	err := s.db.QueryRowContext(ctx, `SELECT device_token_hash FROM device WHERE id=?`, deviceID).Scan(&stored)
+	var stored, familyState string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT d.device_token_hash, f.state
+		FROM device d
+		JOIN family f ON f.id=d.family_id
+		WHERE d.id=?`, deviceID).Scan(&stored, &familyState)
 	if errors.Is(err, sql.ErrNoRows) || stored == "" {
 		return ErrInvalidDeviceCredentials
 	}
@@ -110,6 +115,9 @@ func (s *Store) AuthenticateDevice(ctx context.Context, deviceID, token string) 
 	provided := hex.EncodeToString(digest[:])
 	if len(stored) != len(provided) || subtle.ConstantTimeCompare([]byte(stored), []byte(provided)) != 1 {
 		return ErrInvalidDeviceCredentials
+	}
+	if familyState != "active" {
+		return ErrFamilySuspended
 	}
 	return nil
 }

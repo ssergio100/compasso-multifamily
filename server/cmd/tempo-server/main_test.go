@@ -69,3 +69,25 @@ func TestRunFamilyStateCommand(t *testing.T) {
 		t.Fatal("simultaneous family actions were accepted")
 	}
 }
+
+func TestAccountMailerOptionsRequireCompleteSMTPConfiguration(t *testing.T) {
+	environment := map[string]string{"TEMPO_SMTP_ADDRESS": "smtp.example:587"}
+	lookup := func(name string) string { return environment[name] }
+	if _, err := accountMailerOptions(lookup); err == nil {
+		t.Fatal("incomplete SMTP configuration was accepted")
+	}
+	environment["TEMPO_SMTP_FROM"] = "contas@example.com"
+	environment["TEMPO_SMTP_USERNAME"] = "user"
+	environment["TEMPO_SMTP_PASSWORD"] = "secret"
+	options, err := accountMailerOptions(lookup)
+	if err != nil || len(options) != 1 {
+		t.Fatalf("SMTP options=%d err=%v", len(options), err)
+	}
+	for key := range environment {
+		delete(environment, key)
+	}
+	options, err = accountMailerOptions(lookup)
+	if err != nil || len(options) != 0 {
+		t.Fatalf("disabled SMTP options=%d err=%v", len(options), err)
+	}
+}

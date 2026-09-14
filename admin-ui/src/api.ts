@@ -61,6 +61,25 @@ class API {
     this.csrf = value.csrf_token; return value;
   }
   async logout() { await this.request<void>("/api/v1/admin/session", { method: "DELETE" }, true); }
+  async register(familyName: string, email: string, password: string, confirmation: string) {
+    if (!this.csrf) await this.session();
+    return this.request<{ message: string }>("/api/v1/account/register", { method: "POST", body: JSON.stringify({ family_name: familyName, email, password, password_confirmation: confirmation, csrf_token: this.csrf }) });
+  }
+  async resendConfirmation(email: string) {
+    if (!this.csrf) await this.session();
+    return this.request<{ message: string }>("/api/v1/account/resend-confirmation", { method: "POST", body: JSON.stringify({ email, csrf_token: this.csrf }) });
+  }
+  async requestPasswordReset(email: string) {
+    if (!this.csrf) await this.session();
+    return this.request<{ message: string }>("/api/v1/account/password-reset", { method: "POST", body: JSON.stringify({ email, csrf_token: this.csrf }) });
+  }
+  confirmRegistration(token: string) { return this.request<{ message: string }>("/api/v1/account/confirm", { method: "POST", body: JSON.stringify({ token }) }); }
+  confirmPasswordReset(token: string, password: string, confirmation: string) { return this.request<{ message: string }>("/api/v1/account/password-reset/confirm", { method: "POST", body: JSON.stringify({ token, password, password_confirmation: confirmation }) }); }
+  confirmEmailChange(token: string) { return this.request<{ message: string }>("/api/v1/account/email/confirm", { method: "POST", body: JSON.stringify({ token }) }); }
+  account() { return this.request<{ email: string; family_name: string }>("/api/v1/admin/account"); }
+  changeAccountPassword(currentPassword: string, password: string, confirmation: string) { return this.request<{ message: string }>("/api/v1/admin/account/password", { method: "PUT", body: JSON.stringify({ current_password: currentPassword, password, password_confirmation: confirmation }) }, true); }
+  changeAccountEmail(currentPassword: string, email: string) { return this.request<{ message: string }>("/api/v1/admin/account/email", { method: "POST", body: JSON.stringify({ current_password: currentPassword, email }) }, true); }
+  deleteAccount(currentPassword: string, familyName: string) { return this.request<void>("/api/v1/admin/account", { method: "DELETE", body: JSON.stringify({ current_password: currentPassword, family_name: familyName }) }, true); }
   private async device(id: string): Promise<Device> {
     const detail = await this.request<DeviceDetailResponse>(`/api/v1/admin/devices/${id}`);
     return {
@@ -83,7 +102,7 @@ class API {
   }
   loadDevice(id: string) { return this.device(id); }
   createDevice(name: string, avatarKey: AvatarKey) { return this.request<DeviceResponse>("/api/v1/admin/devices", { method: "POST", body: JSON.stringify({ name, avatar_key: avatarKey }) }, true); }
-  deleteDevice(id: string) { return this.request<void>(`/api/v1/admin/devices/${id}`, { method: "DELETE" }, true); }
+  deleteDevice(id: string, currentPassword: string) { return this.request<void>(`/api/v1/admin/devices/${id}`, { method: "DELETE", body: JSON.stringify({ current_password: currentPassword }) }, true); }
   rename(id: string, name: string, avatarKey: AvatarKey) { return this.request(`/api/v1/admin/devices/${id}`, { method: "PATCH", body: JSON.stringify({ name, avatar_key: avatarKey }) }, true); }
   command(id: string, command: string) { return this.request<{ message: string; operation_id: string }>(`/api/v1/admin/devices/${id}/commands`, { method: "POST", body: JSON.stringify({ command }) }, true); }
   bonus(id: string, minutes: number) { return this.request<{ message: string; operation_id: string }>(`/api/v1/admin/devices/${id}/bonus`, { method: "POST", body: JSON.stringify({ minutes }) }, true); }
@@ -94,8 +113,8 @@ class API {
   }
   policy(id: string, weekly: number[], warning: number) { return this.request(`/api/v1/admin/devices/${id}/policy`, { method: "PUT", body: JSON.stringify({ weekly_quota_seconds: weekly, warning_minutes: warning }) }, true); }
   updatePassword(id: string, password: string, confirmation: string) { return this.request(`/api/v1/admin/devices/${id}/password`, { method: "PUT", body: JSON.stringify({ password, password_confirmation: confirmation }) }, true); }
-  issueToken(id: string) { return this.request<{ device_id: string; device_token: string }>(`/api/v1/admin/devices/${id}/token`, { method: "POST" }, true); }
-  revokeToken(id: string) { return this.request<void>(`/api/v1/admin/devices/${id}/token`, { method: "DELETE" }, true); }
+  issueToken(id: string, currentPassword: string) { return this.request<{ device_id: string; device_token: string }>(`/api/v1/admin/devices/${id}/token`, { method: "POST", body: JSON.stringify({ current_password: currentPassword }) }, true); }
+  revokeToken(id: string, currentPassword: string) { return this.request<void>(`/api/v1/admin/devices/${id}/token`, { method: "DELETE", body: JSON.stringify({ current_password: currentPassword }) }, true); }
   routine(id: string, routine: Omit<Routine, "id">, routineId?: string) { return this.request<{ id: string }>(`/api/v1/admin/devices/${id}/routines${routineId ? `/${routineId}` : ""}`, { method: routineId ? "PUT" : "POST", body: JSON.stringify(routine) }, true); }
   deleteRoutine(id: string, routineId: string) { return this.request(`/api/v1/admin/devices/${id}/routines/${routineId}`, { method: "DELETE" }, true); }
   communication(id: string, after = 0) { return this.request<CommunicationResponse>(`/api/v1/admin/devices/${id}/communication?limit=200${after ? `&after=${after}` : ""}`); }

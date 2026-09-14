@@ -37,13 +37,6 @@ type adminBonusStatusResponse struct {
 	Acknowledged bool `json:"acknowledged"`
 }
 
-type adminSetupRequest struct {
-	Login                string `json:"login"`
-	Password             string `json:"password"`
-	PasswordConfirmation string `json:"password_confirmation"`
-	CSRFToken            string `json:"csrf_token"`
-}
-
 type adminDeviceResponse struct {
 	ID                     string     `json:"id"`
 	Name                   string     `json:"name"`
@@ -134,9 +127,13 @@ type queueAdminCommandRequest struct {
 	Command string `json:"command"`
 }
 
+type sensitiveDeviceRequest struct {
+	CurrentPassword string `json:"current_password"`
+}
+
 func (a *App) corsHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/v1/admin/") {
+		if !strings.HasPrefix(r.URL.Path, "/api/v1/admin/") && !strings.HasPrefix(r.URL.Path, "/api/v1/account/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -176,13 +173,8 @@ func (a *App) adminSessionAPI(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		hasAdministrators, err := a.store.HasAdministrators(r.Context())
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "could not inspect initial setup")
-			return
-		}
-		a.setCookie(w, &http.Cookie{Name: loginCSRFCookie, Value: csrfToken, HttpOnly: true, MaxAge: 600})
-		writeJSON(w, http.StatusOK, adminSessionResponse{CSRFToken: csrfToken, SetupRequired: !hasAdministrators})
+		a.setLoginCSRFCookie(w, &http.Cookie{Name: loginCSRFCookie, Value: csrfToken, HttpOnly: true, MaxAge: 600})
+		writeJSON(w, http.StatusOK, adminSessionResponse{CSRFToken: csrfToken})
 	case http.MethodPost:
 		var request adminLoginRequest
 		if err := decodeJSONBody(w, r, &request); err != nil {
@@ -194,15 +186,27 @@ func (a *App) adminSessionAPI(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusForbidden, "invalid CSRF token")
 			return
 		}
+		loginKey := "login:" + strings.ToLower(strings.TrimSpace(request.Login))
+		if !a.rateLimits.loginAllowed(loginKey, a.now()) {
+			w.Header().Set("Retry-After", "900")
+			writeJSONError(w, http.StatusTooManyRequests, "too many login attempts")
+			return
+		}
 		admin, err := a.store.AdminByLogin(r.Context(), request.Login)
 		validCredentials := false
-		if err == nil && admin.Active && admin.FamilyState == "active" {
+		if err == nil && admin.Active && (admin.Email == "" || admin.EmailVerified) && admin.FamilyState == "active" {
 			validCredentials, _ = localauth.VerifyPassword(request.Password, admin.PasswordHash)
 		}
 		if !validCredentials {
+			if a.rateLimits.loginFailure(loginKey, a.now()) {
+				w.Header().Set("Retry-After", "900")
+				writeJSONError(w, http.StatusTooManyRequests, "too many login attempts")
+				return
+			}
 			writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
+		a.rateLimits.loginSuccess(loginKey)
 		sessionToken, current, err := a.sessions.create(
 			admin.ID, admin.Login, admin.FamilyID, admin.AuthGeneration, a.now(),
 		)
@@ -214,7 +218,7 @@ func (a *App) adminSessionAPI(w http.ResponseWriter, r *http.Request) {
 			Name: sessionCookieName, Value: sessionToken, HttpOnly: true,
 			Expires: current.Expires, MaxAge: int(a.sessions.lifetime.Seconds()),
 		})
-		a.setCookie(w, &http.Cookie{Name: loginCSRFCookie, MaxAge: -1, HttpOnly: true})
+		a.setLoginCSRFCookie(w, &http.Cookie{Name: loginCSRFCookie, MaxAge: -1, HttpOnly: true})
 		writeJSON(w, http.StatusOK, adminSessionResponse{
 			Authenticated: true, Login: current.Login, CSRFToken: current.CSRF,
 		})
@@ -234,72 +238,6 @@ func (a *App) adminSessionAPI(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, POST, DELETE")
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
-}
-
-func (a *App) adminSetupAPI(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var request adminSetupRequest
-	if err := decodeJSONBody(w, r, &request); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid request")
-		return
-	}
-	csrfCookie, err := r.Cookie(loginCSRFCookie)
-	if err != nil || !constantEqual(csrfCookie.Value, request.CSRFToken) {
-		writeJSONError(w, http.StatusForbidden, "invalid CSRF token")
-		return
-	}
-	hasAdministrators, err := a.store.HasAdministrators(r.Context())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "could not inspect initial setup")
-		return
-	}
-	if hasAdministrators {
-		writeJSONError(w, http.StatusConflict, "initial setup already completed")
-		return
-	}
-	login := strings.TrimSpace(request.Login)
-	if login == "" || len(login) > 80 || request.Password == "" || len(request.Password) > 4096 || request.Password != request.PasswordConfirmation {
-		writeJSONError(w, http.StatusBadRequest, "invalid initial administrator")
-		return
-	}
-	passwordHash, err := localauth.HashPassword(request.Password, localauth.DefaultArgon2Params)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "could not secure administrator password")
-		return
-	}
-	created, err := a.store.BootstrapAdmin(r.Context(), login, passwordHash, a.now())
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "could not create initial administrator")
-		return
-	}
-	if !created {
-		writeJSONError(w, http.StatusConflict, "initial setup already completed")
-		return
-	}
-	administrator, err := a.store.AdminByLogin(r.Context(), login)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "could not start administrator session")
-		return
-	}
-	sessionToken, current, err := a.sessions.create(
-		administrator.ID, administrator.Login, administrator.FamilyID, administrator.AuthGeneration, a.now(),
-	)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "could not start administrator session")
-		return
-	}
-	a.setCookie(w, &http.Cookie{
-		Name: sessionCookieName, Value: sessionToken, HttpOnly: true,
-		Expires: current.Expires, MaxAge: int(a.sessions.lifetime.Seconds()),
-	})
-	a.setCookie(w, &http.Cookie{Name: loginCSRFCookie, MaxAge: -1, HttpOnly: true})
-	writeJSON(w, http.StatusCreated, adminSessionResponse{
-		Authenticated: true, Login: current.Login, CSRFToken: current.CSRF,
-	})
 }
 
 func (a *App) adminDevicesAPI(w http.ResponseWriter, r *http.Request) {
@@ -456,6 +394,14 @@ func (a *App) adminDeviceRootAPI(w http.ResponseWriter, r *http.Request, current
 		if !requireAdminCSRF(w, r, current) {
 			return
 		}
+		var request sensitiveDeviceRequest
+		if err := decodeJSONBody(w, r, &request); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		if !a.requireCurrentAccountPassword(w, r, current, request.CurrentPassword) {
+			return
+		}
 		if err := device.Delete(r.Context()); err != nil {
 			writeAdminMutationError(w, err)
 			return
@@ -597,6 +543,14 @@ func (a *App) adminDeviceTokenAPI(w http.ResponseWriter, r *http.Request, curren
 		return
 	}
 	if !requireAdminCSRF(w, r, current) {
+		return
+	}
+	var request sensitiveDeviceRequest
+	if err := decodeJSONBody(w, r, &request); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	if !a.requireCurrentAccountPassword(w, r, current, request.CurrentPassword) {
 		return
 	}
 	if r.Method == http.MethodDelete {
@@ -765,6 +719,15 @@ func (a *App) requireAdminAPISession(w http.ResponseWriter, r *http.Request) (se
 func requireAdminCSRF(w http.ResponseWriter, r *http.Request, current session) bool {
 	if !constantEqual(r.Header.Get(csrfHeaderName), current.CSRF) {
 		writeJSONError(w, http.StatusForbidden, "invalid CSRF token")
+		return false
+	}
+	return true
+}
+
+func (a *App) requireCurrentAccountPassword(w http.ResponseWriter, r *http.Request, current session, password string) bool {
+	admin, err := a.store.AdminByID(r.Context(), current.AdminID)
+	if err != nil || !verifyAccountPassword(password, admin.PasswordHash) {
+		writeJSONError(w, http.StatusForbidden, "current account password is invalid")
 		return false
 	}
 	return true

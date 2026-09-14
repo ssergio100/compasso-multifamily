@@ -29,6 +29,8 @@ type App struct {
 	now               func() time.Time
 	handler           http.Handler
 	hub               *eventHub
+	accountMailer     AccountMailer
+	rateLimits        *rateLimiter
 }
 
 // New creates an API-only HTTP application. The backend does not read, render
@@ -40,6 +42,7 @@ func New(
 	onlineTimeout time.Duration,
 	heartbeatInterval time.Duration,
 	adminOrigin string,
+	options ...Option,
 ) (*App, error) {
 	if store == nil {
 		return nil, errors.New("server store is required")
@@ -56,16 +59,33 @@ func New(
 	app := &App{
 		store: store, sessions: newSessionStore(sessionLifetime), secureCookies: secureCookies,
 		now: time.Now, onlineTimeout: onlineTimeout, heartbeatInterval: heartbeatInterval, hub: newEventHub(),
+		accountMailer: unavailableAccountMailer{}, rateLimits: newRateLimiter(),
 	}
 	if err := app.SetAdminOrigin(adminOrigin); err != nil {
 		return nil, err
+	}
+	for _, option := range options {
+		if option == nil {
+			return nil, errors.New("web option is required")
+		}
+		if err := option(app); err != nil {
+			return nil, err
+		}
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", app.health)
 	mux.HandleFunc("/api/v1/device/heartbeat", app.heartbeat)
 	mux.HandleFunc("/api/v1/admin/session", app.adminSessionAPI)
-	mux.HandleFunc("/api/v1/admin/setup", app.adminSetupAPI)
+	mux.HandleFunc("/api/v1/account/register", app.accountRegisterAPI)
+	mux.HandleFunc("/api/v1/account/resend-confirmation", app.accountResendConfirmationAPI)
+	mux.HandleFunc("/api/v1/account/confirm", app.accountConfirmAPI)
+	mux.HandleFunc("/api/v1/account/password-reset", app.accountPasswordResetAPI)
+	mux.HandleFunc("/api/v1/account/password-reset/confirm", app.accountPasswordResetConfirmAPI)
+	mux.HandleFunc("/api/v1/account/email/confirm", app.accountEmailConfirmAPI)
+	mux.HandleFunc("/api/v1/admin/account", app.adminAccountAPI)
+	mux.HandleFunc("/api/v1/admin/account/password", app.adminAccountPasswordAPI)
+	mux.HandleFunc("/api/v1/admin/account/email", app.adminAccountEmailAPI)
 	mux.HandleFunc("/api/v1/admin/devices", app.adminDevicesAPI)
 	mux.HandleFunc("/api/v1/admin/devices/", app.adminDeviceAPI)
 	app.handler = app.corsHeaders(securityHeaders(app.logAdministrativeCommunication(mux), secureCookies))
@@ -127,7 +147,7 @@ func (a *App) authenticated(r *http.Request) (session, string, bool) {
 		return session{}, "", false
 	}
 	admin, err := a.store.AdminByID(r.Context(), value.AdminID)
-	if err != nil || !admin.Active || admin.FamilyState != "active" ||
+	if err != nil || !admin.Active || (admin.Email != "" && !admin.EmailVerified) || admin.FamilyState != "active" ||
 		admin.FamilyID != value.FamilyID || admin.AuthGeneration != value.AuthGeneration {
 		a.sessions.delete(cookie.Value)
 		return session{}, "", false
@@ -138,6 +158,13 @@ func (a *App) authenticated(r *http.Request) (session, string, bool) {
 
 func (a *App) setCookie(w http.ResponseWriter, cookie *http.Cookie) {
 	cookie.Path = "/api/v1/admin"
+	cookie.Secure = a.secureCookies
+	cookie.SameSite = http.SameSiteStrictMode
+	http.SetCookie(w, cookie)
+}
+
+func (a *App) setLoginCSRFCookie(w http.ResponseWriter, cookie *http.Cookie) {
+	cookie.Path = "/api/v1"
 	cookie.Secure = a.secureCookies
 	cookie.SameSite = http.SameSiteStrictMode
 	http.SetCookie(w, cookie)

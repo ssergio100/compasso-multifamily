@@ -34,15 +34,37 @@ painel deve ser compilado e servido separadamente conforme
 a API no mesmo host, porta `8181`.
 
 O arquivo `.env` permite restringir o bind a `127.0.0.1`, trocar a porta,
-escolher os diretórios de dados e backup e configurar a origem administrativa
-e os cookies seguros. HTTPS deve ser terminado pela infraestrutura escolhida
-para a implantação.
+escolher os diretórios de dados e backup e configurar a origem administrativa,
+os cookies seguros e o envio de e-mail. HTTPS deve ser terminado pela
+infraestrutura escolhida para a implantação.
 
-Depois de implantar também o painel, abra `http://IP-DO-SERVIDOR:8182`. Se o
-banco ainda não possuir administrador, o painel exibe “Configurar o Compasso”
-para criar usuário e senha. A configuração inicial é desativada permanentemente
-após a criação do primeiro acesso. Faça essa etapa antes de publicar o servidor
-na Internet.
+Depois de implantar também o painel, abra `http://IP-DO-SERVIDOR:8182`. O painel
+oferece cadastro autônomo com nome da família, e-mail e senha. A família só é
+criada após a confirmação do e-mail; uma conta pendente expira em 24 horas.
+
+### E-mail de contas
+
+Cadastro, recuperação e troca de e-mail exigem um servidor SMTP com STARTTLS.
+Configure os quatro valores abaixo em `compasso.env`; usuário e senha podem
+ficar vazios somente quando o relay não exige autenticação:
+
+```dotenv
+COMPASSO_SMTP_ADDRESS=smtp.exemplo.com:587
+COMPASSO_SMTP_USERNAME=usuario
+COMPASSO_SMTP_PASSWORD=segredo
+COMPASSO_SMTP_FROM=contas@exemplo.com
+```
+
+Em uma implantação pública, `COMPASSO_ADMIN_ORIGIN` deve conter a origem HTTPS
+exata do painel, por exemplo `https://compasso.exemplo.com`. Esse valor protege
+as chamadas do navegador e também forma os links enviados por e-mail. O modo
+`same-host` é adequado ao acesso local, mas, quando API e painel usam portas
+diferentes, não deve ser usado para os links públicos.
+
+Sem SMTP completo a API continua iniciando, mas os endpoints que precisam de
+e-mail respondem `503`; portanto valide um cadastro e uma recuperação antes de
+abrir o piloto. O servidor exige STARTTLS e TLS 1.2 ou superior e nunca registra
+tokens de conta nos logs.
 
 ## Operação
 
