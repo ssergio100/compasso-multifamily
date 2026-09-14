@@ -24,6 +24,8 @@ import (
 	"github.com/ssergio100/compasso/server/web"
 )
 
+const testInstallationID = "79e78a4f-713b-4e19-a756-b60a0505248a"
+
 func TestSynchronizationStatusTracksHeartbeatResult(t *testing.T) {
 	client := &Client{}
 	if checked, online := client.SynchronizationStatus(); checked || online {
@@ -67,14 +69,17 @@ func TestRunReportsSuccessfulSynchronization(t *testing.T) {
 		if r.Header.Get(protocol.VersionHeader) != protocol.CurrentProtocolVersion {
 			t.Errorf("protocol version header=%q", r.Header.Get(protocol.VersionHeader))
 		}
-		if r.Header.Get(protocol.CapabilitiesHeader) != protocol.NextHeartbeatCapability+", "+protocol.CommandAckReceiptCapability {
+		if r.Header.Get(protocol.CapabilitiesHeader) != protocol.NextHeartbeatCapability+", "+protocol.CommandAckReceiptCapability+", "+protocol.InstallationIdentityCapability {
 			t.Errorf("protocol capabilities header=%q", r.Header.Get(protocol.CapabilitiesHeader))
+		}
+		if r.Header.Get(protocol.InstallationIDHeader) != testInstallationID {
+			t.Errorf("installation ID header=%q", r.Header.Get(protocol.InstallationIDHeader))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{}`))
 	})}}
 	client, err := New(agentStore, httpClient, Config{
-		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token",
+		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token", InstallationID: testInstallationID,
 		HeartbeatInterval: time.Second, AttemptTimeout: time.Second,
 	})
 	if err != nil {
@@ -120,7 +125,7 @@ func TestRunUsesServerIntervalAndDoesNotPersistItAcrossRestart(t *testing.T) {
 		})
 	})}}
 	client, err := New(agentStore, httpClient, Config{
-		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token",
+		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token", InstallationID: testInstallationID,
 		HeartbeatInterval: DefaultHeartbeatInterval, AttemptTimeout: time.Second,
 	})
 	if err != nil {
@@ -143,7 +148,7 @@ func TestRunUsesServerIntervalAndDoesNotPersistItAcrossRestart(t *testing.T) {
 	restartedClient, err := New(agentStore, &http.Client{Transport: handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{}`))
 	})}}, Config{
-		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token",
+		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token", InstallationID: testInstallationID,
 		HeartbeatInterval: DefaultHeartbeatInterval, AttemptTimeout: time.Second,
 	})
 	if err != nil {
@@ -193,7 +198,7 @@ func TestNewRejectsUnsafeHeartbeatFallback(t *testing.T) {
 	defer agentStore.Close()
 	for _, interval := range []time.Duration{time.Millisecond, MaximumHeartbeatInterval + time.Second} {
 		if _, err := New(agentStore, http.DefaultClient, Config{
-			ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token",
+			ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token", InstallationID: testInstallationID,
 			HeartbeatInterval: interval, AttemptTimeout: time.Second,
 		}); err == nil {
 			t.Fatalf("unsafe heartbeat fallback %s accepted", interval)
@@ -233,7 +238,7 @@ func TestControlCommandAcknowledgesOnlyAfterGraphicalEffect(t *testing.T) {
 		}`))
 	})}}
 	client, err := New(agentStore, httpClient, Config{
-		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token",
+		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token", InstallationID: testInstallationID,
 		HeartbeatInterval: time.Second, AttemptTimeout: time.Second,
 	})
 	if err != nil {
@@ -275,7 +280,7 @@ func TestRunTimesOutStalledAttemptAndReconnects(t *testing.T) {
 	transport := &recoveryTransport{}
 	httpClient := &http.Client{Transport: transport}
 	client, err := New(agentStore, httpClient, Config{
-		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token",
+		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token", InstallationID: testInstallationID,
 		HeartbeatInterval: MinimumHeartbeatInterval, AttemptTimeout: 20 * time.Millisecond,
 	})
 	if err != nil {
@@ -408,7 +413,7 @@ func TestRevisionOfflineQueueAndImmediateEnforcement(t *testing.T) {
 	}
 	defer agentStore.Close()
 	client, err := New(agentStore, httpClient, Config{
-		ServerURL: "http://tempo.test", DeviceID: device.ID, DeviceToken: token,
+		ServerURL: "http://tempo.test", DeviceID: device.ID, DeviceToken: token, InstallationID: testInstallationID,
 		HeartbeatInterval: 10 * time.Second, AttemptTimeout: time.Second,
 	})
 	if err != nil {
@@ -493,7 +498,7 @@ func TestTransportErrorsRedactDeviceToken(t *testing.T) {
 	deviceToken := "secret-device-token-that-must-not-appear"
 	httpClient := &http.Client{Transport: failingTransport{failure: fmt.Errorf("failed Authorization: Bearer %s", deviceToken)}}
 	client, err := New(agentStore, httpClient, Config{
-		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: deviceToken,
+		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: deviceToken, InstallationID: testInstallationID,
 		HeartbeatInterval: 10 * time.Second, AttemptTimeout: time.Second,
 	})
 	if err != nil {
@@ -533,7 +538,7 @@ func TestSessionBalanceIsAnchoredOnceAndOnlyRefreshedByRealChange(t *testing.T) 
 	}
 	defer agentStore.Close()
 	client, err := New(agentStore, &http.Client{Transport: handlerTransport{handler: application}}, Config{
-		ServerURL: "http://tempo.test", DeviceID: device.ID, DeviceToken: token,
+		ServerURL: "http://tempo.test", DeviceID: device.ID, DeviceToken: token, InstallationID: testInstallationID,
 		HeartbeatInterval: 10 * time.Second, AttemptTimeout: time.Second,
 	})
 	if err != nil {
@@ -616,7 +621,7 @@ func TestThirtyMinuteBonusReplacesOneMinuteAnchorOnlyAfterDurableApplication(t *
 	}
 	defer agentStore.Close()
 	client, err := New(agentStore, &http.Client{Transport: handlerTransport{handler: application}}, Config{
-		ServerURL: "http://tempo.test", DeviceID: device.ID, DeviceToken: token, HeartbeatInterval: time.Second, AttemptTimeout: time.Second,
+		ServerURL: "http://tempo.test", DeviceID: device.ID, DeviceToken: token, InstallationID: testInstallationID, HeartbeatInterval: time.Second, AttemptTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -673,7 +678,7 @@ func TestInvalidSessionStateCannotAcknowledgeBonusCommand(t *testing.T) {
 		}`))
 	})
 	client, err := New(store, &http.Client{Transport: handlerTransport{handler: handler}}, Config{
-		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token", HeartbeatInterval: time.Second, AttemptTimeout: time.Second,
+		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token", InstallationID: testInstallationID, HeartbeatInterval: time.Second, AttemptTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -704,7 +709,7 @@ func TestLegacyDatedBonusUsesHeartbeatLocalDay(t *testing.T) {
 		}`))
 	})
 	client, err := New(store, &http.Client{Transport: handlerTransport{handler: handler}}, Config{
-		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token", HeartbeatInterval: time.Second, AttemptTimeout: time.Second,
+		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token", InstallationID: testInstallationID, HeartbeatInterval: time.Second, AttemptTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -766,7 +771,8 @@ func TestLocalPasswordChangesOnlyAfterSuccessfulSynchronization(t *testing.T) {
 	defer agentStore.Close()
 	synchronizationClient, err := New(agentStore, httpClient, Config{
 		ServerURL: "http://tempo.test", DeviceID: device.ID,
-		DeviceToken: deviceToken, HeartbeatInterval: 10 * time.Second, AttemptTimeout: time.Second,
+		DeviceToken: deviceToken, InstallationID: testInstallationID,
+		HeartbeatInterval: 10 * time.Second, AttemptTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -868,7 +874,7 @@ func TestHeartbeatFailureDiscardsRemoteControl(t *testing.T) {
 		_, _ = w.Write([]byte(`{"server_time":"2026-08-10T12:00:00Z","control":{"revision":2,"monitoring_paused":false,"manual_block":true}}`))
 	})}
 	client, err := New(store, &http.Client{Transport: transport}, Config{
-		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token",
+		ServerURL: "http://tempo.test", DeviceID: "device", DeviceToken: "token", InstallationID: testInstallationID,
 		HeartbeatInterval: time.Second, AttemptTimeout: time.Second,
 	})
 	if err != nil {

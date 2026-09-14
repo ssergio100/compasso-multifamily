@@ -7,12 +7,14 @@ import (
 )
 
 const (
-	HeartbeatPath               = "/api/v1/device/heartbeat"
-	VersionHeader               = "X-Compasso-Protocol-Version"
-	CapabilitiesHeader          = "X-Compasso-Capabilities"
-	NextHeartbeatCapability     = "next-heartbeat-seconds"
-	CommandAckReceiptCapability = "command-ack-receipts"
-	CurrentProtocolVersion      = "2"
+	HeartbeatPath                  = "/api/v1/device/heartbeat"
+	VersionHeader                  = "X-Compasso-Protocol-Version"
+	CapabilitiesHeader             = "X-Compasso-Capabilities"
+	InstallationIDHeader           = "X-Compasso-Agent-Installation-ID"
+	InstallationIdentityCapability = "installation-identity"
+	NextHeartbeatCapability        = "next-heartbeat-seconds"
+	CommandAckReceiptCapability    = "command-ack-receipts"
+	CurrentProtocolVersion         = "2"
 )
 
 type HeartbeatRequest struct {

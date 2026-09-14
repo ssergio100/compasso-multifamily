@@ -22,6 +22,7 @@ type Config struct {
 	ServerURL         string
 	DeviceID          string
 	DeviceToken       string
+	InstallationID    string
 	HeartbeatInterval time.Duration
 	AttemptTimeout    time.Duration
 }
@@ -122,7 +123,7 @@ func New(store *storage.Store, httpClient *http.Client, config Config) (*Client,
 	if store == nil || httpClient == nil {
 		return nil, errors.New("store and HTTP client are required")
 	}
-	if config.ServerURL == "" || config.DeviceID == "" || config.DeviceToken == "" ||
+	if config.ServerURL == "" || config.DeviceID == "" || config.DeviceToken == "" || !protocol.ValidInstallationID(config.InstallationID) ||
 		config.AttemptTimeout <= 0 {
 		return nil, errors.New("complete synchronization configuration is required")
 	}
@@ -230,9 +231,10 @@ func (c *Client) Heartbeat(ctx context.Context, now time.Time) (result protocol.
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Authorization", "Bearer "+c.config.DeviceToken)
 	httpRequest.Header.Set("X-Tempo-Device-ID", c.config.DeviceID)
+	httpRequest.Header.Set(protocol.InstallationIDHeader, c.config.InstallationID)
 	httpRequest.Header.Set(protocol.VersionHeader, protocol.CurrentProtocolVersion)
 	httpRequest.Header.Set(protocol.CapabilitiesHeader,
-		protocol.NextHeartbeatCapability+", "+protocol.CommandAckReceiptCapability)
+		protocol.NextHeartbeatCapability+", "+protocol.CommandAckReceiptCapability+", "+protocol.InstallationIdentityCapability)
 	stage = "transport"
 	response, err := c.http.Do(httpRequest)
 	if err != nil {

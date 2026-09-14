@@ -160,13 +160,27 @@ inventário de hardware ou interfaces descontinuadas.
   heartbeat de família suspensa responde `403 family_suspended`; token inválido
   continua recebendo `401` sem revelar o estado da família.
 
+### 2026-09-13 — marco 3, checkpoint do agente compatível
+
+- Adicionada a migração local `0006_installation_identity.sql`. O vínculo
+  guarda UUID v4 e somente o fingerprint SHA-256 do token; a configuração com
+  o segredo não foi duplicada no banco.
+- Um banco antigo com vínculo existente recebe UUID e fingerprint sem perder
+  política. Reinício e atualização com os mesmos dados preservam o UUID; troca
+  apenas do token gera outro UUID e preserva política/uso; troca de servidor ou
+  dispositivo gera outro UUID e limpa o estado local do vínculo anterior.
+- O agente envia `X-Compasso-Agent-Installation-ID` e anuncia a capacidade
+  `installation-identity`. A validação compartilhada aceita apenas UUID v4
+  canônico. O servidor ainda não exige nem vincula esse cabeçalho neste
+  checkpoint, preservando a ordem agente-primeiro da implantação.
+
 ## Próximo passo exato
 
-Criar a migração do SQLite local para UUID v4 e fingerprint SHA-256 do token,
-preservando política, uso e eventos de um vínculo antigo. Em seguida fazer o
-cliente enviar o UUID e a capacidade no heartbeat, com testes de atualização,
-troca apenas de token e troca de servidor/dispositivo, antes de alterar a
-aceitação no servidor.
+Implementar no servidor o vínculo atômico do primeiro UUID somente junto a um
+heartbeat válido. Rotação/revogação devem incrementar a geração, limpar o
+vínculo e a presença; UUID concorrente deve receber
+`409 installation_conflict`, e agente sem a capacidade obrigatória deve
+receber `426 agent_upgrade_required`.
 
 ## Validação acumulada
 
@@ -182,3 +196,6 @@ aceitação no servidor.
 - `make test` — aprovado integralmente ao concluir o marco 2 (todos os pacotes
   Go, 22 testes da interface local, typecheck/build da `admin-ui`, 16 migrações,
   hardening, links de documentação e builds dos três binários).
+- `go test ./agent/storage ./agent/syncclient ./agent/cmd/tempo-agent
+  ./protocol/v1` e `./scripts/test-migrations.sh` — aprovados no checkpoint
+  agente-primeiro; o banco local possui seis migrações.

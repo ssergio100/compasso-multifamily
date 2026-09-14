@@ -88,11 +88,11 @@ func run(configPath string, logger *log.Logger) error {
 		return err
 	}
 	defer store.Close()
-	enrollmentReset, err := store.BindEnrollment(ctx, settings.ServerURL, settings.DeviceID, setupConfirmedAtStartup)
+	enrollment, err := store.BindEnrollment(ctx, settings.ServerURL, settings.DeviceID, settings.DeviceToken, setupConfirmedAtStartup)
 	if err != nil {
 		return err
 	}
-	if enrollmentReset {
+	if enrollment.StateReset {
 		logger.Printf("previous enrollment state cleared before initial synchronization")
 	}
 	logind, err := session.NewLogind(settings.LoginctlPath)
@@ -111,8 +111,9 @@ func run(configPath string, logger *log.Logger) error {
 	logger.Printf("starting controlled_user=%s database=%s", settings.ControlledUser, settings.DatabasePath)
 	synchronizer, err := syncclient.New(store, &http.Client{Timeout: settings.HTTPTimeout}, syncclient.Config{
 		ServerURL: settings.ServerURL, DeviceID: settings.DeviceID,
-		DeviceToken: settings.DeviceToken, HeartbeatInterval: syncclient.DefaultHeartbeatInterval,
-		AttemptTimeout: settings.HTTPTimeout,
+		DeviceToken: settings.DeviceToken, InstallationID: enrollment.InstallationID,
+		HeartbeatInterval: syncclient.DefaultHeartbeatInterval,
+		AttemptTimeout:    settings.HTTPTimeout,
 	})
 	if err != nil {
 		return err

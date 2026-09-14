@@ -21,9 +21,9 @@ func TestBindEnrollmentClearsUnconfirmedLegacyState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reset, err := store.BindEnrollment(ctx, "https://api.example.test", "new-device", false)
-	if err != nil || !reset {
-		t.Fatalf("reset=%t err=%v", reset, err)
+	binding, err := store.BindEnrollment(ctx, "https://api.example.test", "new-device", "token-1", false)
+	if err != nil || !binding.StateReset || binding.InstallationID == "" {
+		t.Fatalf("binding=%+v err=%v", binding, err)
 	}
 	if _, err := store.CurrentPolicy(); !errors.Is(err, ErrNoPolicy) {
 		t.Fatalf("old policy remains available: %v", err)
@@ -44,13 +44,19 @@ func TestBindEnrollmentPreservesConfirmedUpgradeAndSameDevice(t *testing.T) {
 	if err := store.ReplacePolicy(ctx, samplePolicy(6)); err != nil {
 		t.Fatal(err)
 	}
-	reset, err := store.BindEnrollment(ctx, "https://api.example.test", "device-1", true)
-	if err != nil || reset {
-		t.Fatalf("confirmed legacy binding reset=%t err=%v", reset, err)
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO enrollment(singleton_id, server_url, device_id) VALUES (1, ?, ?)`,
+		"https://api.example.test", "device-1"); err != nil {
+		t.Fatal(err)
 	}
-	reset, err = store.BindEnrollment(ctx, "https://api.example.test", "device-1", false)
-	if err != nil || reset {
-		t.Fatalf("same enrollment reset=%t err=%v", reset, err)
+	binding, err := store.BindEnrollment(ctx, "https://api.example.test", "device-1", "token-1", false)
+	if err != nil || binding.StateReset || binding.InstallationID == "" {
+		t.Fatalf("confirmed legacy binding=%+v err=%v", binding, err)
+	}
+	firstInstallationID := binding.InstallationID
+	binding, err = store.BindEnrollment(ctx, "https://api.example.test", "device-1", "token-1", false)
+	if err != nil || binding.StateReset || binding.IdentityChanged || binding.InstallationID != firstInstallationID {
+		t.Fatalf("same enrollment binding=%+v err=%v", binding, err)
 	}
 	policy, err := store.CurrentPolicy()
 	if err != nil || policy.Revision != 6 {
@@ -62,17 +68,43 @@ func TestBindEnrollmentClearsStateWhenDeviceChanges(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, filepath.Join(t.TempDir(), "agent.db"))
 	defer store.Close()
-	if _, err := store.BindEnrollment(ctx, "https://api.example.test", "device-1", true); err != nil {
+	first, err := store.BindEnrollment(ctx, "https://api.example.test", "device-1", "token-1", true)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ReplacePolicy(ctx, samplePolicy(6)); err != nil {
 		t.Fatal(err)
 	}
-	reset, err := store.BindEnrollment(ctx, "https://api.example.test", "device-2", true)
-	if err != nil || !reset {
-		t.Fatalf("changed enrollment reset=%t err=%v", reset, err)
+	binding, err := store.BindEnrollment(ctx, "https://api.example.test", "device-2", "token-1", true)
+	if err != nil || !binding.StateReset || binding.InstallationID == first.InstallationID {
+		t.Fatalf("changed enrollment binding=%+v err=%v", binding, err)
 	}
 	if _, err := store.CurrentPolicy(); !errors.Is(err, ErrNoPolicy) {
 		t.Fatalf("old device policy remains available: %v", err)
+	}
+}
+
+func TestBindEnrollmentChangesIdentityForTokenOnlyWithoutClearingState(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, filepath.Join(t.TempDir(), "agent.db"))
+	defer store.Close()
+	first, err := store.BindEnrollment(ctx, "https://api.example.test", "device-1", "token-1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplacePolicy(ctx, samplePolicy(6)); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.BindEnrollment(ctx, "https://api.example.test", "device-1", "token-2", false)
+	if err != nil || second.StateReset || !second.IdentityChanged || second.InstallationID == first.InstallationID {
+		t.Fatalf("rotated token binding=%+v first=%+v err=%v", second, first, err)
+	}
+	policy, err := store.CurrentPolicy()
+	if err != nil || policy.Revision != 6 {
+		t.Fatalf("token-only change cleared policy=%+v err=%v", policy, err)
+	}
+	third, err := store.BindEnrollment(ctx, "https://api.example.test", "device-1", "token-2", false)
+	if err != nil || third.IdentityChanged || third.InstallationID != second.InstallationID {
+		t.Fatalf("restart changed identity=%+v previous=%+v err=%v", third, second, err)
 	}
 }
