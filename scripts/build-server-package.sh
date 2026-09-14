@@ -25,6 +25,7 @@ install -d \
   "${package_root}/DEBIAN" \
   "${package_root}/etc/compasso-server" \
   "${package_root}/usr/share/doc/compasso-server/third-party" \
+  "${package_root}/usr/lib/systemd/system" \
   "${application_root}/agent" \
   "${application_root}/licenses/third-party" \
   "${application_root}/scripts" \
@@ -78,6 +79,10 @@ install -m 0644 "${project_root}/docs/server-installation.md" \
   "${application_root}/README.md"
 install -m 0644 "${project_root}/docs/atualizacao-manual-servidor.md" \
   "${application_root}/docs/"
+install -m 0644 \
+  "${project_root}/packaging/systemd/compasso-server-backup.service" \
+  "${project_root}/packaging/systemd/compasso-server-backup.timer" \
+  "${package_root}/usr/lib/systemd/system/"
 
 package_path="${project_root}/dist/compasso-server_${package_version}_${package_architecture}.deb"
 dpkg-deb --root-owner-group --build "${package_root}" "${package_path}"

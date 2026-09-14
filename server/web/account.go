@@ -170,7 +170,7 @@ func (a *App) accountConfirmAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, err := a.store.ConfirmRegistration(r.Context(), hashAccountToken(request.Token), a.now())
-	if errors.Is(err, storage.ErrFamilyLimit) {
+	if errors.Is(err, storage.ErrFamilyLimit) || errors.Is(err, storage.ErrPilotNotReady) {
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error": "registrations are temporarily closed", "code": "registrations_closed",
 		})

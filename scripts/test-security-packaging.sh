@@ -3,6 +3,8 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 systemd_unit="${project_root}/packaging/systemd/tempo-agent.service"
+server_backup_service="${project_root}/packaging/systemd/compasso-server-backup.service"
+server_backup_timer="${project_root}/packaging/systemd/compasso-server-backup.timer"
 agent_configuration_helper="${project_root}/agent/cmd/tempo-agent-configure/main.go"
 dockerfile="${project_root}/server/Dockerfile"
 admin_compose="${project_root}/deploy/admin-ui/compose.yml"
@@ -53,10 +55,15 @@ grep -Fq 'send_member="GetSynchronizationReport"' "${project_root}/packaging/dbu
 bash -n "${project_root}/scripts/install-server.sh"
 bash -n "${project_root}/scripts/backup-server.sh"
 bash -n "${project_root}/scripts/restore-server-backup.sh"
+bash -n "${project_root}/scripts/test-backup-restore.sh"
 bash -n "${project_root}/scripts/update-server.sh"
 bash -n "${project_root}/scripts/publish-server.sh"
 bash -n "${project_root}/scripts/publish-admin-ui.sh"
 bash -n "${project_root}/scripts/check-doc-links.sh"
+grep -Fqx 'ExecStart=/opt/compasso-server/scripts/backup-server.sh' "${server_backup_service}"
+grep -Fqx 'NoNewPrivileges=true' "${server_backup_service}"
+grep -Fqx 'OnCalendar=daily' "${server_backup_timer}"
+grep -Fqx 'Persistent=true' "${server_backup_timer}"
 if grep -Eq 'sergio@|192\.168\.' "${project_root}/scripts/publish-admin-ui.sh"; then
   echo "erro: script de publicação contém destino pessoal" >&2
   exit 1

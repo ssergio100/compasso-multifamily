@@ -81,6 +81,11 @@ func TestAdministrativeSessionCORSAndSecureCookie(t *testing.T) {
 		t.Fatalf("API login status=%d body=%s", loginResponse.Code, loginResponse.Body.String())
 	}
 	adminSessionCookie := findCookie(t, loginResponse.Result().Cookies(), sessionCookieName)
+	var authenticatedSession adminSessionResponse
+	decodeResponse(t, loginResponse, &authenticatedSession)
+	if !authenticatedSession.EmailRequired {
+		t.Fatal("legacy owner was not prompted to confirm an e-mail")
+	}
 	if !adminSessionCookie.HttpOnly || !adminSessionCookie.Secure || adminSessionCookie.SameSite != http.SameSiteStrictMode ||
 		adminSessionCookie.Path != "/api/v1/admin" {
 		t.Fatalf("unsafe session cookie: %+v", adminSessionCookie)

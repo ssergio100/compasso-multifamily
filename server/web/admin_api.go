@@ -20,6 +20,7 @@ type adminSessionResponse struct {
 	Login         string `json:"login,omitempty"`
 	CSRFToken     string `json:"csrf_token"`
 	SetupRequired bool   `json:"setup_required"`
+	EmailRequired bool   `json:"email_required,omitempty"`
 }
 
 type adminLoginRequest struct {
@@ -163,8 +164,10 @@ func (a *App) adminSessionAPI(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		if current, _, authenticated := a.authenticated(r); authenticated {
+			admin, _ := a.store.AdminByID(r.Context(), current.AdminID)
 			writeJSON(w, http.StatusOK, adminSessionResponse{
 				Authenticated: true, Login: current.Login, CSRFToken: current.CSRF,
+				EmailRequired: admin.Email == "" || !admin.EmailVerified,
 			})
 			return
 		}
@@ -221,6 +224,7 @@ func (a *App) adminSessionAPI(w http.ResponseWriter, r *http.Request) {
 		a.setLoginCSRFCookie(w, &http.Cookie{Name: loginCSRFCookie, MaxAge: -1, HttpOnly: true})
 		writeJSON(w, http.StatusOK, adminSessionResponse{
 			Authenticated: true, Login: current.Login, CSRFToken: current.CSRF,
+			EmailRequired: admin.Email == "" || !admin.EmailVerified,
 		})
 	case http.MethodDelete:
 		current, sessionToken, authenticated := a.requireAdminAPISession(w, r)

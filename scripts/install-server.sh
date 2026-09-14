@@ -72,6 +72,12 @@ for attempt in {1..30}; do
   sleep 2
 done
 
+if [[ -f /usr/lib/systemd/system/compasso-server-backup.timer ]]; then
+  systemctl daemon-reload
+  systemctl enable --now compasso-server-backup.timer
+fi
+
 echo "Compasso instalado."
 echo "API: porta 8181 do servidor"
 echo "A interface administrativa é implantada separadamente."
+echo "Backup diário: compasso-server-backup.timer"

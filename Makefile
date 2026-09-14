@@ -1,4 +1,4 @@
-.PHONY: all build build-agent build-agent-portable build-server admin-ui-dev package-client package-deb package-server package-all publish-admin-ui publish-server test-deb test-server-package fmt fmt-check lint test test-go test-ui test-admin-ui test-migrations test-security test-docs clean
+.PHONY: all build build-agent build-agent-portable build-server admin-ui-dev package-client package-deb package-server package-all publish-admin-ui publish-server test-deb test-server-package fmt fmt-check lint test test-go test-ui test-admin-ui test-migrations test-backup-restore test-security test-docs clean
 
 all: test
 
@@ -70,13 +70,16 @@ test-admin-ui:
 test-migrations:
 	./scripts/test-migrations.sh
 
+test-backup-restore:
+	./scripts/test-backup-restore.sh
+
 test-security:
 	./scripts/test-security-packaging.sh
 
 test-docs:
 	./scripts/check-doc-links.sh
 
-test: lint test-go test-ui test-admin-ui test-migrations test-security test-docs build
+test: lint test-go test-ui test-admin-ui test-migrations test-backup-restore test-security test-docs build
 
 clean:
 	rm -rf ./bin ./dist

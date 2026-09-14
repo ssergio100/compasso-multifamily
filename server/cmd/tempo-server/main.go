@@ -26,8 +26,21 @@ func main() {
 	configPath := flag.String("config", "server/config.toml", "server configuration path")
 	suspendFamily := flag.String("suspend-family", "", "suspend a family by owner login or family ID, then exit")
 	reactivateFamily := flag.String("reactivate-family", "", "reactivate a family by owner login or family ID, then exit")
+	deleteSuspendedFamily := flag.String("delete-suspended-family", "", "delete a suspended family by its exact ID, then exit")
+	confirmFamilyID := flag.String("confirm-family-id", "", "repeat the family ID required by -delete-suspended-family")
 	flag.Parse()
 	logger := log.New(os.Stdout, "tempo-server: ", log.LstdFlags|log.LUTC)
+	if *deleteSuspendedFamily != "" || *confirmFamilyID != "" {
+		if *suspendFamily != "" || *reactivateFamily != "" {
+			logger.Printf("fatal: family deletion cannot be combined with a state change")
+			os.Exit(1)
+		}
+		if err := runSuspendedFamilyDeleteCommand(*configPath, *deleteSuspendedFamily, *confirmFamilyID, logger); err != nil {
+			logger.Printf("fatal: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *suspendFamily != "" || *reactivateFamily != "" {
 		if err := runFamilyStateCommand(*configPath, *suspendFamily, *reactivateFamily, logger); err != nil {
 			logger.Printf("fatal: %v", err)
@@ -39,6 +52,31 @@ func main() {
 		logger.Printf("fatal: %v", err)
 		os.Exit(1)
 	}
+}
+
+func runSuspendedFamilyDeleteCommand(configPath, familyID, confirmation string, logger *log.Logger) error {
+	familyID, confirmation = strings.TrimSpace(familyID), strings.TrimSpace(confirmation)
+	if familyID == "" || confirmation == "" {
+		return errors.New("-delete-suspended-family and -confirm-family-id are both required")
+	}
+	settings, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	settings, err = config.ApplyEnvironmentOverrides(settings, os.Getenv)
+	if err != nil {
+		return err
+	}
+	store, err := storage.Open(context.Background(), settings.DatabasePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := store.DeleteSuspendedFamily(context.Background(), familyID, confirmation); err != nil {
+		return err
+	}
+	logger.Printf("suspended family deleted family_id=%s", familyID)
+	return nil
 }
 
 func runFamilyStateCommand(configPath, suspendTarget, reactivateTarget string, logger *log.Logger) error {

@@ -100,7 +100,7 @@ export interface LiveStatus {
   control_status: ControlStatus;
 }
 
-export interface Session { authenticated: boolean; login?: string; csrf_token: string; setup_required: boolean }
+export interface Session { authenticated: boolean; login?: string; csrf_token: string; setup_required: boolean; email_required?: boolean }
 
 export interface DeviceResponse {
   id: string; name: string; avatar_key?: AvatarKey; last_seen_at: string | null; policy_revision: number; applied_policy_revision: number;

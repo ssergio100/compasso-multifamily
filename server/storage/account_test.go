@@ -170,3 +170,39 @@ func TestConfirmationAppliesPilotFamilyLimitAtomically(t *testing.T) {
 		t.Fatalf("family limit was partial: families=%d memberships=%d", families, memberships)
 	}
 }
+
+func TestSuspendedFamilyDeletionRequiresItsExactID(t *testing.T) {
+	ctx := context.Background()
+	store := openEmptyTestStore(t)
+	defer store.Close()
+	now := time.Date(2026, time.September, 14, 12, 0, 0, 0, time.UTC)
+	owner, err := store.CreateFamilyOwner(ctx, "Família suspensa", "owner@example.com", "hash", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := store.CreateDeviceForFamily(ctx, owner.FamilyID, "Computador", "cat", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteSuspendedFamily(ctx, owner.FamilyID, owner.FamilyID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("active family deletion error=%v", err)
+	}
+	if _, _, err := store.SetFamilyState(ctx, owner.FamilyID, "suspended", now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteSuspendedFamily(ctx, owner.FamilyID, "wrong-id"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("wrong ID confirmation error=%v", err)
+	}
+	if _, err := store.AdminByID(ctx, owner.ID); err != nil {
+		t.Fatalf("wrong confirmation changed family: %v", err)
+	}
+	if err := store.DeleteSuspendedFamily(ctx, owner.FamilyID, owner.FamilyID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AdminByID(ctx, owner.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted suspended owner remains: %v", err)
+	}
+	if _, _, err := store.LoadDevice(ctx, device.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted suspended device remains: %v", err)
+	}
+}

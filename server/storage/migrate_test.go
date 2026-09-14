@@ -62,6 +62,22 @@ func TestMigrationFifteenBackfillsSingleFamily(t *testing.T) {
 	`, stamp, stamp); err == nil || !strings.Contains(err.Error(), "family_id is required") {
 		t.Fatalf("orphan insert error=%v", err)
 	}
+	operationTime := time.Date(2026, time.September, 14, 12, 0, 0, 0, time.UTC)
+	if send, err := store.BeginRegistration(ctx, "Família Dois", "two@example.com", "hash", "new-family-token", operationTime.Add(time.Hour), operationTime); err != nil || !send {
+		t.Fatalf("pending second family send=%t err=%v", send, err)
+	}
+	if _, err := store.ConfirmRegistration(ctx, "new-family-token", operationTime); !errors.Is(err, ErrPilotNotReady) {
+		t.Fatalf("second family entered before migrated owner e-mail confirmation: %v", err)
+	}
+	if err := store.BeginEmailChange(ctx, "admin-1", "legacy-owner@example.com", "legacy-email-token", operationTime.Add(time.Hour), operationTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfirmEmailChange(ctx, "legacy-email-token", operationTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ConfirmRegistration(ctx, "new-family-token", operationTime); err != nil {
+		t.Fatalf("second family remained blocked after migrated owner confirmation: %v", err)
+	}
 }
 
 func TestMigrationFifteenKeepsFreshDatabaseEmpty(t *testing.T) {

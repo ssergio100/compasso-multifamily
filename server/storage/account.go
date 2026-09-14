@@ -160,6 +160,17 @@ func (s *Store) ConfirmRegistration(ctx context.Context, tokenHash string, now t
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM family`).Scan(&familyCount); err != nil {
 		return Admin{}, err
 	}
+	var ownersWithoutConfirmedEmail int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM family_member m JOIN admin_user u ON u.id=m.admin_user_id
+		WHERE m.role='owner' AND (u.email IS NULL OR u.email_verified_at IS NULL)`,
+	).Scan(&ownersWithoutConfirmedEmail); err != nil {
+		return Admin{}, err
+	}
+	if ownersWithoutConfirmedEmail != 0 {
+		return Admin{}, ErrPilotNotReady
+	}
 	if familyCount >= 100 {
 		return Admin{}, ErrFamilyLimit
 	}
@@ -333,6 +344,44 @@ func (s *Store) DeleteActiveFamily(ctx context.Context, familyID, exactName stri
 	if storedName != exactName {
 		return ErrConflict
 	}
+	if err := deleteFamilyRecords(ctx, tx, familyID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// DeleteSuspendedFamily is the exceptional local-operator deletion path. It
+// deliberately accepts only an opaque family ID and requires the caller to
+// repeat that exact ID as confirmation; active families remain self-service.
+func (s *Store) DeleteSuspendedFamily(ctx context.Context, familyID, exactID string) error {
+	familyID, exactID = strings.TrimSpace(familyID), strings.TrimSpace(exactID)
+	if familyID == "" || exactID == "" {
+		return errors.New("family id and exact confirmation are required")
+	}
+	if familyID != exactID {
+		return ErrConflict
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM family WHERE id=?`, familyID).Scan(&state); errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if state != "suspended" {
+		return ErrConflict
+	}
+	if err := deleteFamilyRecords(ctx, tx, familyID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func deleteFamilyRecords(ctx context.Context, tx *sql.Tx, familyID string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT admin_user_id FROM family_member WHERE family_id=?`, familyID)
 	if err != nil {
 		return err
@@ -357,7 +406,7 @@ func (s *Store) DeleteActiveFamily(ctx context.Context, familyID, exactName stri
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // CleanupExpiredAccounts removes abandoned unverified identities and expired

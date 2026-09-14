@@ -72,9 +72,9 @@ inventário de hardware ou interfaces descontinuadas.
   métricas agregadas e redução inicial de escrita/log/SSE.
 - [x] Concluir testes focados e a suíte integral do marco 3; corrigir qualquer
   regressão encontrada.
-- [ ] Fechar a confirmação de e-mail da conta migrada e as operações locais
+- [x] Fechar a confirmação de e-mail da conta migrada e as operações locais
   excepcionais necessárias antes do piloto.
-- [ ] Validar backup e restauração em banco migrado.
+- [x] Validar backup e restauração em banco migrado.
 - [x] Executar o cenário de carga equivalente a uma hora com 500 agentes,
   registrar p95, erros e crescimento do banco.
 - [ ] Validar configuração pública (HTTPS, cookies, origem, SMTP e exigência de
@@ -233,12 +233,40 @@ inventário de hardware ou interfaces descontinuadas.
   `COMPASSO_RUN_PILOT_LOAD_TEST=1 go test -v ./server/web -run
   '^TestPilotLoadOneLogicalHour500Agents$' -count=1 -timeout=30m`.
 
+### 2026-09-14 — fechamento operacional anterior ao piloto
+
+- Uma conta vinda do banco antigo continua entrando uma última vez com o login
+  anterior. A `admin-ui` vigente aceita esse identificador, abre **Minha conta**
+  automaticamente e orienta a confirmação do e-mail. Ao confirmar, o login é
+  substituído pelo e-mail normalizado e as sessões antigas são invalidadas.
+- A confirmação de uma nova família verifica na mesma transação se todos os
+  proprietários existentes já possuem e-mail confirmado. Assim, a segunda
+  família não entra enquanto a conta migrada estiver incompleta; o fluxo normal
+  de cadastro continua autônomo e não depende do operador.
+- Adicionado o comando local `-delete-suspended-family ID
+  -confirm-family-id ID`. Ele recusa família ativa, confirmação divergente e ID
+  ausente; remove a família suspensa e seus dados apenas quando os dois IDs
+  opacos são exatamente iguais.
+- `scripts/test-backup-restore.sh` cria um banco temporário na versão 16,
+  arquiva o diretório `server/`, altera o original e restaura a cópia. O ensaio
+  aprovou checksum idêntico, conteúdo, 16 migrações, `integrity_check=ok` e
+  nenhuma violação de chave estrangeira sem tocar em Docker ou dados reais.
+- O pacote agora inclui `compasso-server-backup.timer`, diário, persistente e
+  com atraso aleatório de até uma hora. O instalador o ativa somente após a API
+  ficar saudável. Os backups não são apagados automaticamente, preservando a
+  retenção mínima; espaço disponível continua sendo item de monitoramento.
+- O pacote `compasso-server_0.1.0~pilot31_all.deb` foi montado e validado com os
+  dois units de backup. SHA-256:
+  `3dcf90684a9d6106309c3d31b731829c1695b951a43233a7ef9c85775ea54bf6`.
+
 ## Próximo passo exato
 
-Gravar o checkpoint do marco 3. Depois fechar as duas pendências operacionais
-anteriores ao piloto: confirmação do e-mail da conta migrada e exclusão
-excepcional de família suspensa por comando local com o ID exato. Em seguida
-validar backup/restauração sobre um banco migrado.
+Gravar o checkpoint operacional. Depois auditar o requisito de autoria das
+mutações administrativas e validar a configuração pública sem presumir valores
+de produção: HTTPS/origem/cookies, SMTP, identidade obrigatória, métricas,
+timer de backup e procedimento de segredos. Executar `make test` final e deixar
+explícito no diário o que depende do ambiente real antes de abrir a segunda
+família.
 
 ## Validação acumulada
 
@@ -265,3 +293,8 @@ validar backup/restauração sobre um banco migrado.
 - `make test` — aprovado integralmente ao concluir o marco 3: `go vet`, todos
   os pacotes Go, 22 testes da interface local, typecheck/build da `admin-ui`,
   seis migrações do agente, 16 do servidor, hardening, documentação e builds.
+- fluxos focados de conta migrada e exclusão suspensa — aprovados em storage,
+  comando local, API e typecheck/build da `admin-ui` vigente.
+- `scripts/test-backup-restore.sh` — aprovado sobre banco na versão 16;
+  `scripts/test-security-packaging.sh` — aprovado com o timer diário.
+- pacote do servidor `0.1.0~pilot31` — montado e aprovado pelo teste do artefato.

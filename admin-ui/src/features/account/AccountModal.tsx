@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "../../api";
 import { Modal } from "../../components";
 
-export function AccountModal({ onClose, onSignedOut }: { onClose: () => void; onSignedOut: () => void }) {
+export function AccountModal({ emailRequired = false, onClose, onSignedOut }: { emailRequired?: boolean; onClose: () => void; onSignedOut: () => void }) {
   const [account, setAccount] = useState<{ email: string; family_name: string } | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -27,6 +27,7 @@ export function AccountModal({ onClose, onSignedOut }: { onClose: () => void; on
 
   return <Modal title="Minha conta" description={account ? `Família ${account.family_name} · ${account.email || "e-mail ainda não confirmado"}` : "Carregando dados da conta…"} onClose={() => !busy && onClose()}>
     {error && <div className="routine-conflict-alert" role="alert"><AlertTriangle aria-hidden="true" size={20} /><div><strong>Não foi possível concluir</strong><span>{error}</span></div></div>}
+    {emailRequired && <div className="routine-conflict-alert" role="status"><Mail aria-hidden="true" size={20} /><div><strong>Confirme o e-mail da conta existente</strong><span>Informe seu e-mail abaixo. Uma segunda família só poderá entrar depois dessa confirmação.</span></div></div>}
     {message && <p className="account-success" role="status">{message}</p>}
     {account && <div className="account-sections">
       <form className="modal-form" onSubmit={async (event) => { event.preventDefault(); begin("email"); try { const result = await api.changeAccountEmail(currentPassword, newEmail); setMessage(result.message); setCurrentPassword(""); setNewEmail(""); } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível alterar o e-mail."); } finally { setBusy(null); } }}><h3><Mail size={18} />Alterar e-mail</h3><label>Novo e-mail<input autoComplete="email" inputMode="email" type="email" value={newEmail} onChange={(event) => setNewEmail(event.target.value)} /></label><label>Senha atual<input autoComplete="current-password" type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><button className="primary-button" disabled={Boolean(busy) || !newEmail || !currentPassword}>Enviar confirmação</button></form>

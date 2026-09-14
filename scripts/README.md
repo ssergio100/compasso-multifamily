@@ -215,6 +215,13 @@ Aplica, em bancos SQLite temporários, todas as migrações do agente e do servi
 na ordem dos arquivos. Confere quantidade registrada, integridade e chaves
 estrangeiras. Complementa os testes Go ao validar diretamente a sequência SQL.
 
+#### `test-backup-restore.sh`
+
+Cria um banco temporário com todas as migrações do servidor e uma família de
+controle, gera o mesmo arquivo `server/` usado pela operação, altera o original
+e restaura o backup. Confere checksum, conteúdo, versões, integridade e chaves
+estrangeiras sem acessar Docker ou os diretórios reais do servidor.
+
 #### `test-security-packaging.sh`
 
 Verifica diretivas de hardening do systemd, sintaxe de scripts, configuração
@@ -228,7 +235,7 @@ dos pacotes atuam sobre os `.deb` já montados.
 - Docker e Docker Compose para binários portáteis, validação do Compose e
   execução do servidor;
 - `dpkg`, `dpkg-deb` e `dpkg --validate-version` para pacotes Debian;
-- `sqlite3` para `test-migrations.sh`;
+- `sqlite3` para `test-migrations.sh` e `test-backup-restore.sh`;
 - `ssh`, `scp` e `curl` somente para publicação remota;
 - `appstreamcli` é opcional na validação do pacote do cliente.
 

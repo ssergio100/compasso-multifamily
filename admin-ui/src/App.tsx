@@ -48,9 +48,11 @@ export function App() {
   const [authenticated, setAuthenticated] = useState(!remoteMode);
   const [checking, setChecking] = useState(remoteMode);
   const [loading, setLoading] = useState(remoteMode);
+  const [emailRequired, setEmailRequired] = useState(false);
   const [modal, setModal] = useState<AppModal>(null);
   const [editingRoutine, setEditingRoutine] = useState<Routine | null>(null);
   const navigationReady = useRef(false);
+  const emailPrompted = useRef(false);
   const devicesRef = useRef(devices);
   const navigationRef = useRef<AppNavigationState>({
     compassoNavigation: true, view, selectedId, modal: null, editingRoutineId: null,
@@ -132,11 +134,18 @@ export function App() {
     api.session()
       .then((session) => {
         setAuthenticated(session.authenticated);
+        setEmailRequired(Boolean(session.email_required));
         if (session.authenticated) void load();
       })
       .catch(() => setAuthenticated(false))
       .finally(() => setChecking(false));
   }, []);
+
+  useEffect(() => {
+    if (checking || loading || !authenticated || !emailRequired || emailPrompted.current) return;
+    emailPrompted.current = true;
+    openModal("account");
+  }, [authenticated, checking, emailRequired, loading]);
 
   const patchDevice = (change: (device: Device) => Device) => {
     setDevices((all) => all.map((item) => item.id === selected.id ? change(item) : item));
@@ -156,9 +165,11 @@ export function App() {
   };
   const logout = async () => {
     if (remoteMode) await api.logout();
+    emailPrompted.current = false;
     setAuthenticated(false);
   };
   const signedOut = () => {
+    emailPrompted.current = false;
     setAuthenticated(false);
     setDevices([]);
     setModal(null);
@@ -166,9 +177,9 @@ export function App() {
   };
 
   if (checking) return <div className="center-state"><Brand /><span className="loader" />Verificando sessão…</div>;
-  if (!authenticated) return <LoginPage onLogin={async (login, password) => { const session = await api.login(login, password); setAuthenticated(session.authenticated); if (session.authenticated) await load(); return session.authenticated; }} />;
+  if (!authenticated) return <LoginPage onLogin={async (login, password) => { const session = await api.login(login, password); setAuthenticated(session.authenticated); setEmailRequired(Boolean(session.email_required)); if (session.authenticated) await load(); return session.authenticated; }} />;
   if (loading && !selected) return <div className="center-state"><Brand /><span className="loader" />Organizando seus computadores…</div>;
-  if (!selected) return <div className="center-state"><Brand /><h1>Nenhum computador</h1><button className="primary-button" onClick={() => openModal("device")}><Plus size={18} />Adicionar computador</button><button className="center-link" onClick={() => openModal("account")}>Minha conta</button>{modal === "device" && <DeviceModal onClose={closeModal} onSubmit={async (name, avatarKey) => { if (remoteMode) await api.createDevice(name, avatarKey); else setDevices([{ ...mockDevices[1], id: localID(), name, avatar_key: avatarKey }]); closeModal(); if (remoteMode) await load(); }} />}{modal === "account" && <AccountModal onClose={closeModal} onSignedOut={signedOut} />}{message && <Toast>{message}</Toast>}</div>;
+  if (!selected) return <div className="center-state"><Brand /><h1>Nenhum computador</h1><button className="primary-button" onClick={() => openModal("device")}><Plus size={18} />Adicionar computador</button><button className="center-link" onClick={() => openModal("account")}>Minha conta</button>{modal === "device" && <DeviceModal onClose={closeModal} onSubmit={async (name, avatarKey) => { if (remoteMode) await api.createDevice(name, avatarKey); else setDevices([{ ...mockDevices[1], id: localID(), name, avatar_key: avatarKey }]); closeModal(); if (remoteMode) await load(); }} />}{modal === "account" && <AccountModal emailRequired={emailRequired} onClose={closeModal} onSignedOut={signedOut} />}{message && <Toast>{message}</Toast>}</div>;
 
   return <div className="app-shell">
     <a className="skip" href="#workspace">Pular para o conteúdo</a>
@@ -189,7 +200,7 @@ export function App() {
     <nav className="bottom-nav">{nav.map(({ id, label, short, Icon }) => <button className={view === id ? "active" : ""} key={id} onClick={() => navigate({ view: id, modal: null, editingRoutineId: null })}><Icon size={21} /><span>{short ?? label}</span></button>)}</nav>
     {modal === "bonus" && <BonusModal onClose={closeModal} onSubmit={async (minutes) => { if (!remoteMode) { patchDevice((device) => ({ ...device, bonus_seconds: device.bonus_seconds + minutes * 60, remaining_seconds: device.remaining_seconds + minutes * 60 })); closeModal(); notify(`${minutes} minutos adicionados.`); return; } const confirmation = await api.bonus(selected.id, minutes); pendingOperations.current.add(confirmation.operation_id); closeModal(); setMessage("Pedido guardado pelo servidor. Aguardando o computador confirmar."); }} />}
     {modal === "device" && <DeviceModal onClose={closeModal} onSubmit={async (name, avatarKey) => { let createdId = ""; if (remoteMode) { const created = await api.createDevice(name, avatarKey); createdId = created.id; await load(); } else { const device = { ...mockDevices[1], id: localID(), name, avatar_key: avatarKey }; createdId = device.id; setDevices((all) => [...all, device]); } navigate({ selectedId: createdId, modal: null, editingRoutineId: null }, true); notify("Computador adicionado."); }} />}
-    {modal === "account" && <AccountModal onClose={closeModal} onSignedOut={signedOut} />}
+    {modal === "account" && <AccountModal emailRequired={emailRequired} onClose={closeModal} onSignedOut={signedOut} />}
     {modal === "routine" && <RoutineModal initial={editingRoutine ?? undefined} routines={selected.routines.filter((routine) => routine.id !== editingRoutine?.id)} onClose={closeModal} onSubmit={async (draft) => { const routineId = editingRoutine?.id; const saved = remoteMode ? await api.routine(selected.id, draft, routineId) : { id: routineId ?? localID() }; const savedId = routineId ?? saved.id; if (remoteMode) await load(); patchDevice((device) => ({ ...device, routines: device.routines.some((routine) => routine.id === savedId) ? device.routines.map((routine) => routine.id === savedId ? { ...draft, id: savedId } : routine) : [...device.routines, { ...draft, id: savedId || localID() }] })); closeModal(); notify(routineId ? "Rotina atualizada." : "Rotina criada."); }} />}
     {message && <Toast>{message}</Toast>}
   </div>;

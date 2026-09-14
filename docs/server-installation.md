@@ -42,6 +42,11 @@ Depois de implantar também o painel, abra `http://IP-DO-SERVIDOR:8182`. O paine
 oferece cadastro autônomo com nome da família, e-mail e senha. A família só é
 criada após a confirmação do e-mail; uma conta pendente expira em 24 horas.
 
+Na primeira atualização de uma instalação antiga, entre uma última vez com o
+acesso anterior. O painel abre **Minha conta** e pede um e-mail confirmado. O
+cadastro de uma segunda família permanece fechado até essa confirmação; depois
+dela, o login passa a ser o e-mail informado.
+
 ### E-mail de contas
 
 Cadastro, recuperação e troca de e-mail exigem um servidor SMTP com STARTTLS.
@@ -97,6 +102,11 @@ sudo /opt/compasso-server/scripts/restore-server-backup.sh /srv/docker/backups/c
 Uma atualização preserva `.env` e o banco externo ao diretório do pacote. A
 restauração exige confirmação textual e move os dados
 anteriores para o diretório de backups antes de recuperar o arquivo escolhido.
+O instalador ativa `compasso-server-backup.timer`, que executa um backup por dia
+com atraso aleatório de até uma hora e recupera uma execução perdida durante
+desligamento. Consulte `systemctl status compasso-server-backup.timer`; os
+arquivos não são removidos automaticamente, portanto monitore o espaço e
+preserve ao menos os sete dias mais recentes.
 
 ### Suspender ou reativar uma família
 
@@ -112,6 +122,18 @@ sudo docker compose run --rm --no-deps compasso-api -reactivate-family proprieta
 ```
 
 Executar novamente a ação já aplicada é seguro e informa `changed=false`.
+
+Uma família ativa exclui a própria conta pelo painel. Em incidente ou abandono,
+uma família suspensa só pode ser excluída pelo operador repetindo seu ID opaco
+exato nos dois argumentos:
+
+```bash
+cd /opt/compasso-server
+sudo docker compose run --rm --no-deps compasso-api \
+  -delete-suspended-family ID-EXATO -confirm-family-id ID-EXATO
+```
+
+O comando recusa famílias ativas e confirma a remoção apenas no log local.
 
 ## Fronteira dos componentes
 
