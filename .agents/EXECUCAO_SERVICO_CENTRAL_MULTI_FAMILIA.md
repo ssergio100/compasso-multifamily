@@ -436,6 +436,34 @@ inventário de hardware ou interfaces descontinuadas.
   `https://family.smresume.com/downloads/`. O pacote, o checksum e o manifesto
   público foram validados; o `pilot31` foi preservado.
 
+### 2026-09-15 — pausa da contagem com tela travada
+
+- Bug confirmado em uso real: com a máquina do agente bloqueada por inatividade,
+  o painel mostrava "Bloqueado" e "tempo restante preservado", mas exibia
+  "Contagem de tempo: Em andamento" e o saldo continuava sendo debitado.
+- Causa em três camadas: a contabilização do agente
+  (`agent/daemon/daemon.go`) ignorava o estado de trava e contava enquanto
+  existisse sessão gráfica `active`; o flag `counting` do servidor
+  (`server/web/status.go`) também ignorava `GraphicalSessionLocked`; e a
+  interface, ao receber `counting=true` junto com o bloqueio, exibia textos
+  contraditórios.
+- Correção alinhada à definição única de contagem: uso é debitado somente com
+  sessão gráfica local `active` e destravada. O intervalo já observado antes da
+  transição para travada é preservado uma única vez; ciclos posteriores não
+  acrescentam uso até o desbloqueio. Nenhuma mudança de banco, protocolo, API
+  nem interface — com `counting=false` na trava, a UI já mostra "Parada",
+  consistente com "tempo restante preservado".
+- Agente: novo campo `lastActiveSessionLocked` aplicado às três condições de
+  contabilização (antes da meia-noite, depois da meia-noite e mesmo dia), com
+  testes `TestScreenLockPausesUsageUntilUnlock` e o ajuste de
+  `TestLockedSessionFreezesBalanceAndConsumesAlertsWithoutReplay`.
+- Servidor: `counting` agora exige `&& !device.GraphicalSessionLocked`, com o
+  teste novo `TestLiveStatusStopsCountingWhileGraphicalSessionLocked`.
+- Documentação atualizada: `agent/README.md`, `docs/client-installation.md`,
+  `docs/arquitetura-comunicacao.md` e `CHANGELOG.md`.
+- Branch: `fix/nao-debitar-tempo-com-tela-travada` — apenas o alvo `family`;
+  nada que remeta ao projeto `compasso` foi alterado.
+
 ### Pendências confirmadas pelo uso real
 
 1. **Erros diagnosticáveis — concluídos no `family`; Compasso pendente.** O
@@ -450,18 +478,26 @@ inventário de hardware ou interfaces descontinuadas.
    dispositivo e continuar correta com horário de verão, mudança de local e
    servidor hospedado em qualquer país. Agentes antigos devem usar um fallback
    explícito durante a migração.
-3. **Fim da sessão gráfica — implementado e publicado; validação real
-   pendente.** O `pilot32` interrompe a contagem quando a sessão deixa de estar
-   ativa e o painel recebe o mesmo estado no heartbeat. Falta validar o ciclo em
-   uma máquina controlada real. Bloquear a tela continua sendo um evento
-   diferente e não pausa a contagem.
+3. **Fim da sessão gráfica e tela travada — implementado e publicado; validação
+   real pendente.** O `pilot32` interrompe a contagem quando a sessão deixa de
+   estar ativa e o painel recebe o mesmo estado no heartbeat. A correção desta
+   sessão (branch `fix/nao-debitar-tempo-com-tela-travada`) também pausa a
+   contagem enquanto a tela está travada, pois o bloqueio por inatividade
+   continuava debitando o saldo mesmo com o painel informando que o tempo
+   restante estava preservado. Falta validar os dois ciclos em uma máquina
+   controlada real.
 
 ## Próximo passo exato
 
-Instalar o `pilot32` em uma máquina controlada e validar o caso real: anotar o
-uso, encerrar a sessão gráfica, aguardar um heartbeat, confirmar sessão ausente
-e contagem parada no painel e verificar que o uso não cresce. Entrar novamente
-deve retomar a contagem sem perder nem duplicar o saldo anterior.
+Instalar o pacote corrigido em uma máquina controlada e validar os dois casos
+reais: (1) anotar o uso, encerrar a sessão gráfica, aguardar um heartbeat,
+confirmar sessão ausente e contagem parada no painel e verificar que o uso não
+cresce; (2) travar a tela por inatividade, aguardar um heartbeat, confirmar
+"Contagem de tempo: Parada" junto com o bloqueio e que o saldo permanece
+constante. Entrar novamente ou desbloquear deve retomar a contagem sem perder
+nem duplicar o saldo anterior. Em seguida, publicar o pacote
+`compasso-client` no `family` e sincronizar o servidor (mudança de
+`server/web/status.go`).
 
 ## Validação acumulada
 

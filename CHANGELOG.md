@@ -21,7 +21,8 @@ há uma versão pública estável, as mudanças relevantes permanecem em
   posterior (`AGPL-3.0-or-later`), com avisos de componentes de terceiros nos
   artefatos distribuídos.
 - a contabilização do agente agora é interrompida quando a sessão gráfica local
-  deixa o estado `active`; bloquear a tela não altera a contagem.
+  deixa o estado `active` ou quando a tela é travada; o uso volta a ser debitado
+  somente depois que a sessão gráfica ativa estiver destravada novamente.
 
 ### Segurança
 

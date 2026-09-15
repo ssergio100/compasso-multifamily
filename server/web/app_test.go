@@ -779,6 +779,44 @@ func TestLiveStatusUsesControlledComputerLocalDateWhileOnline(t *testing.T) {
 	}
 }
 
+func TestLiveStatusStopsCountingWhileGraphicalSessionLocked(t *testing.T) {
+	fixture := newWebFixture(t, false, time.Hour)
+	defer fixture.store.Close()
+	ctx := context.Background()
+	device, err := fixture.store.CreateDevice(ctx, "Zorin", fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var quotas [7]int64
+	quotas[time.Monday] = 3600
+	if err := fixture.store.SaveQuotas(ctx, device.ID, quotas, 5, fixture.now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.ReceiveHeartbeat(ctx, device.ID, protocol.HeartbeatRequest{
+		PolicyRevision: 1, LocalDate: "2026-08-10", SecondsUsed: 1,
+		GraphicalSessionActive: true, GraphicalSessionID: "session-9",
+		RequestSessionState: true,
+	}, fixture.now); err != nil {
+		t.Fatal(err)
+	}
+	_, _, active, err := fixture.app.loadDeviceLiveStatus(ctx, device.ID)
+	if err != nil || !active.Counting || active.ActualState != "unblocked" {
+		t.Fatalf("active status=%+v err=%v", active, err)
+	}
+	// The machine locked by inactivity keeps the logind session active but must
+	// no longer be reported as counting, mirroring the paused debit on the agent.
+	if _, err := fixture.store.ReceiveHeartbeat(ctx, device.ID, protocol.HeartbeatRequest{
+		PolicyRevision: 1, LocalDate: "2026-08-10", SecondsUsed: 1,
+		GraphicalSessionActive: true, GraphicalSessionLocked: true, GraphicalSessionID: "session-9",
+	}, fixture.now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, _, locked, err := fixture.app.loadDeviceLiveStatus(ctx, device.ID)
+	if err != nil || locked.Counting || locked.ActualState != "blocked" || locked.ControlStatus != "blocked" {
+		t.Fatalf("locked status=%+v err=%v", locked, err)
+	}
+}
+
 func TestLiveStatusDistinguishesRequestedFromConfirmedBlock(t *testing.T) {
 	fixture := newWebFixture(t, false, time.Hour)
 	defer fixture.store.Close()

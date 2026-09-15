@@ -657,8 +657,8 @@ last_seen_at >= agora - online_timeout
 ```
 
 Online não significa sessão gráfica ativa. Contagem só aparece ativa quando a
-decisão da política permite contar, o agente está online e existe sessão
-gráfica ativa.
+decisão da política permite contar, o agente está online, existe sessão gráfica
+ativa e ela não está travada.
 
 O detector de offline roda a cada `online_timeout/2`, com mínimo de 1 segundo,
 mas só publica para dispositivos com assinantes SSE. Ele emite

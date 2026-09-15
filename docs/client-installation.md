@@ -35,9 +35,9 @@ journalctl -u tempo-agent.service --no-pager -n 50
 ```
 
 O tempo é contabilizado somente enquanto a conta controlada possui uma sessão
-gráfica local no estado `active`. Encerrar a sessão interrompe a contagem na
-próxima observação do agente e o heartbeat seguinte atualiza o painel. Bloquear
-a tela não encerra a sessão e, no comportamento atual, não pausa a contagem.
+gráfica local no estado `active` e destravada. Encerrar a sessão ou travar a
+tela interrompe a contagem na próxima observação do agente, e o heartbeat
+seguinte atualiza o painel.
 
 ## Atualização e remoção
 

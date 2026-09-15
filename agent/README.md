@@ -9,7 +9,7 @@ aplicativos abertos.
 
 - somente sessões gráficas locais `x11` ou `wayland` da conta configurada são
   contabilizadas;
-- tela bloqueada continua contando enquanto a sessão gráfica existir;
+- tela bloqueada pausa a contagem até a sessão gráfica ser destravada;
 - TTY, SSH, sessões remotas, greeter e contas diferentes não contam;
 - a ausência de rede não interfere no ciclo local;
 - consumo é salvo a cada cinco segundos por padrão e no desligamento normal;

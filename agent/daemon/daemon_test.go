@@ -351,7 +351,7 @@ func TestQuotaCycleEmitsOneMinuteDesktopAlert(t *testing.T) {
 	}
 }
 
-func TestLockedSessionConsumesAlertWithoutDeliveringItAfterUnlock(t *testing.T) {
+func TestLockedSessionFreezesBalanceAndConsumesAlertsWithoutReplay(t *testing.T) {
 	ctx := context.Background()
 	store := testStore(t)
 	defer store.Close()
@@ -371,13 +371,76 @@ func TestLockedSessionConsumesAlertWithoutDeliveringItAfterUnlock(t *testing.T) 
 		t.Fatal(err)
 	}
 	locked, err := policyDaemon.Step(ctx, start.Add(time.Minute))
-	if err != nil || len(locked.DueAlerts) != 0 || locked.UsageSeconds != 60 {
-		t.Fatalf("locked session alerts=%+v err=%v", locked.DueAlerts, err)
+	if err != nil || len(locked.DueAlerts) != 0 || locked.UsageSeconds != 0 {
+		t.Fatalf("locked session alerts=%+v usage=%d err=%v", locked.DueAlerts, locked.UsageSeconds, err)
 	}
 	sessions.locked["3"] = false
 	unlocked, err := policyDaemon.Step(ctx, start.Add(time.Minute+time.Second))
 	if err != nil || len(unlocked.DueAlerts) != 0 {
 		t.Fatalf("unlock replayed alerts=%+v err=%v", unlocked.DueAlerts, err)
+	}
+}
+
+func TestScreenLockPausesUsageUntilUnlock(t *testing.T) {
+	ctx := context.Background()
+	store := testStore(t)
+	defer store.Close()
+	start := time.Date(2026, time.August, 10, 14, 0, 0, 0, time.Local)
+	if err := store.ReplacePolicy(ctx, testPolicy(1, start.Weekday(), time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	sessions := graphicalFake()
+	synchronization := &fakeSynchronizationSource{online: true}
+	daemon, err := New(store, sessions, "child", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.SetSynchronizationSource(synchronization)
+	if err := store.SaveConfirmedSessionState(ctx, storage.ConfirmedSessionState{
+		Revision: 1, SessionID: "3", LocalDate: start.Format("2006-01-02"),
+		RemainingSeconds: 3600, ConfirmedAt: start,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := daemon.Step(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	active, err := daemon.Step(ctx, start.Add(4*time.Second))
+	if err != nil || active.UsageSeconds != 4 {
+		t.Fatalf("active session usage=%d err=%v", active.UsageSeconds, err)
+	}
+
+	// A screen locked by inactivity leaves the logind session active but sets
+	// the LockedHint. From the following cycle the elapsed interval must not be
+	// debited until the desktop is unlocked again.
+	sessions.locked = map[string]bool{"3": true}
+	locked, err := daemon.Step(ctx, start.Add(5*time.Second))
+	if err != nil || locked.UsageSeconds != 5 {
+		t.Fatalf("lock transition usage=%d err=%v", locked.UsageSeconds, err)
+	}
+	stillLocked, err := daemon.Step(ctx, start.Add(35*time.Second))
+	if err != nil || stillLocked.UsageSeconds != 5 {
+		t.Fatalf("usage continued while locked: %d err=%v", stillLocked.UsageSeconds, err)
+	}
+
+	sessions.locked = map[string]bool{}
+	sessions.locked["3"] = false
+	unlocked, err := daemon.Step(ctx, start.Add(36*time.Second))
+	if err != nil || unlocked.UsageSeconds != 5 {
+		t.Fatalf("unlock transition usage=%d err=%v", unlocked.UsageSeconds, err)
+	}
+	resumed, err := daemon.Step(ctx, start.Add(40*time.Second))
+	if err != nil || resumed.UsageSeconds != 9 {
+		t.Fatalf("usage did not resume after unlock: %d err=%v", resumed.UsageSeconds, err)
+	}
+
+	durable, err := store.LoadDailyUsage(ctx, start.Format("2006-01-02"))
+	if err != nil || durable.SecondsUsed != 9 {
+		t.Fatalf("durable usage after lock cycle=%+v err=%v", durable, err)
+	}
+	if !synchronization.graphicalSessionActive || synchronization.graphicalSessionID != "3" {
+		t.Fatalf("locked session was not reported as active: %+v", synchronization)
 	}
 }
 

@@ -183,7 +183,7 @@ func (a *App) loadDeviceLiveStatusFrom(ctx context.Context, source deviceLiveSta
 		})
 	}
 	if decision, evaluationErr := policy.Evaluate(decisionInput); evaluationErr == nil {
-		liveStatus.Counting = decision.ShouldCount && online && device.GraphicalSessionActive
+		liveStatus.Counting = decision.ShouldCount && online && device.GraphicalSessionActive && !device.GraphicalSessionLocked
 		if !decision.NextBlockAt.IsZero() {
 			liveStatus.NextBlock = decision.NextBlockAt.Format("02/01 15:04")
 		}
