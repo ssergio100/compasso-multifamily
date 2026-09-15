@@ -464,6 +464,22 @@ inventário de hardware ou interfaces descontinuadas.
 - Branch: `fix/nao-debitar-tempo-com-tela-travada` — apenas o alvo `family`;
   nada que remeta ao projeto `compasso` foi alterado.
 
+### 2026-09-15 — publicação da correção no `family`
+
+- Publicado `compasso-client_0.1.0~pilot33_amd64.deb` em
+  `https://family.smresume.com/downloads/`, SHA-256
+  `fa5b762cc87e8db8aab2d3ec3023e828125ce15d332fa55cfc9f69fd569cca60`. O `pilot33`
+  traz a pausa da contagem com tela travada; o manifesto público foi validado na
+  origem (respondendo `200`, `Cache-Control: no-store`).
+- O `source` do `family` foi sincronizado com os arquivos da correção
+  (`server/web/status.go`, `agent/daemon/daemon.go` e testes) e a API foi
+  recriada como `family-api:0.1.0-family3`, atualizando `COMPASSO_VERSION` no
+  `.env` do servidor. Volume mantido; backups em
+  `/srv/docker/compose/family/backups/source-before-screenlock-20260915` e
+  `env-before-screenlock-20260915`.
+- O container ficou `healthy` logo após a recriação; `https://apifamily.smresume.com/healthz`
+  respondeu `200` e o manifesto público confirmou o `pilot33` como vigente.
+
 ### Pendências confirmadas pelo uso real
 
 1. **Erros diagnosticáveis — concluídos no `family`; Compasso pendente.** O
@@ -489,15 +505,13 @@ inventário de hardware ou interfaces descontinuadas.
 
 ## Próximo passo exato
 
-Instalar o pacote corrigido em uma máquina controlada e validar os dois casos
+Instalar o `0.1.0~pilot33` em uma máquina controlada e validar os dois casos
 reais: (1) anotar o uso, encerrar a sessão gráfica, aguardar um heartbeat,
 confirmar sessão ausente e contagem parada no painel e verificar que o uso não
 cresce; (2) travar a tela por inatividade, aguardar um heartbeat, confirmar
 "Contagem de tempo: Parada" junto com o bloqueio e que o saldo permanece
 constante. Entrar novamente ou desbloquear deve retomar a contagem sem perder
-nem duplicar o saldo anterior. Em seguida, publicar o pacote
-`compasso-client` no `family` e sincronizar o servidor (mudança de
-`server/web/status.go`).
+nem duplicar o saldo anterior.
 
 ## Validação acumulada
 
@@ -539,3 +553,9 @@ nem duplicar o saldo anterior. Em seguida, publicar o pacote
   da sessão autenticada.
 - `make test` final — aprovado integralmente, agora incluindo o ensaio
   automático de backup/restauração.
+- `make test` — aprovado integralmente na correção da tela travada (agente,
+  servidor, interface local, `admin-ui`, migrações, hardening, links e builds), e
+  o `pilot33` passou na validação Debian antes da publicação.
+- publicação `family` — `compasso-client_0.1.0~pilot33` e
+  `family-api:0.1.0-family3` recriada e saudável; endpoints públicos
+  responderam `200`.
