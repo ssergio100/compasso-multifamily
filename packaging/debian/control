@@ -1,5 +1,5 @@
 Package: compasso-client
-Version: 0.1.0~pilot32
+Version: 0.1.0~pilot33
 Architecture: amd64
 Maintainer: Compasso <compasso@smresume.com>
 Section: admin
