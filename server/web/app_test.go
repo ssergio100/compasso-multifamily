@@ -49,6 +49,9 @@ func TestAdministrativeSessionCORSAndSecureCookie(t *testing.T) {
 	if sessionResponse.Code != http.StatusOK || sessionResponse.Header().Get("Access-Control-Allow-Origin") != adminOrigin {
 		t.Fatalf("session bootstrap status=%d headers=%v", sessionResponse.Code, sessionResponse.Header())
 	}
+	if exposed := sessionResponse.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(exposed, correlationIDHeader) || !strings.Contains(exposed, errorCodeHeader) {
+		t.Fatalf("diagnostic headers are not exposed to the administrative interface: %q", exposed)
+	}
 	loginCSRFTokenCookie := findCookie(t, sessionResponse.Result().Cookies(), loginCSRFCookie)
 	if loginCSRFTokenCookie.Path != "/api/v1" || !loginCSRFTokenCookie.HttpOnly || !loginCSRFTokenCookie.Secure {
 		t.Fatalf("unsafe login CSRF cookie: %+v", loginCSRFTokenCookie)
@@ -92,6 +95,58 @@ func TestAdministrativeSessionCORSAndSecureCookie(t *testing.T) {
 	}
 	if loginResponse.Header().Get("Strict-Transport-Security") == "" {
 		t.Fatal("production API response is missing HSTS")
+	}
+}
+
+func TestAPIErrorResponsesIncludeStableDiagnostics(t *testing.T) {
+	fixture := newWebFixture(t, false, time.Hour)
+	defer fixture.store.Close()
+
+	first := fixture.requestJSON(http.MethodGet, "/api/v1/admin/devices", nil, false)
+	if first.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d body=%s", first.Code, first.Body.String())
+	}
+	var firstError protocol.ErrorResponse
+	decodeResponse(t, first, &firstError)
+	firstCorrelationID := first.Header().Get(correlationIDHeader)
+	if firstError.Code != "authentication_required" || first.Header().Get(errorCodeHeader) != firstError.Code {
+		t.Fatalf("unexpected error code header=%q body=%+v", first.Header().Get(errorCodeHeader), firstError)
+	}
+	if firstCorrelationID == "" || firstError.CorrelationID != firstCorrelationID {
+		t.Fatalf("correlation header=%q body=%+v", firstCorrelationID, firstError)
+	}
+
+	second := fixture.requestJSON(http.MethodGet, "/api/v1/admin/devices", nil, false)
+	var secondError protocol.ErrorResponse
+	decodeResponse(t, second, &secondError)
+	if secondError.CorrelationID == "" || secondError.CorrelationID == firstCorrelationID {
+		t.Fatalf("correlation identifiers are not unique: first=%q second=%q", firstCorrelationID, secondError.CorrelationID)
+	}
+
+	missing := fixture.requestJSON(http.MethodGet, "/api/v1/unknown", nil, false)
+	var missingError protocol.ErrorResponse
+	decodeResponse(t, missing, &missingError)
+	if missing.Code != http.StatusNotFound || missingError.Code != "not_found" || missingError.CorrelationID == "" {
+		t.Fatalf("unknown route status=%d body=%+v", missing.Code, missingError)
+	}
+}
+
+func TestStableErrorCodesKeepSensitiveFailuresGeneric(t *testing.T) {
+	tests := []struct {
+		status  int
+		message string
+		want    string
+	}{
+		{http.StatusUnauthorized, "invalid credentials", "invalid_credentials"},
+		{http.StatusForbidden, "invalid CSRF token", "invalid_csrf_token"},
+		{http.StatusForbidden, "origin not allowed", "origin_not_allowed"},
+		{http.StatusInternalServerError, "internal error", "internal_error"},
+		{http.StatusConflict, "Este intervalo já está ocupado pela rotina “Dormir”.", "routine_conflict"},
+	}
+	for _, test := range tests {
+		if got := stableErrorCode(test.status, test.message); got != test.want {
+			t.Errorf("stableErrorCode(%d, %q)=%q want=%q", test.status, test.message, got, test.want)
+		}
 	}
 }
 
@@ -712,6 +767,15 @@ func TestLiveStatusUsesControlledComputerLocalDateWhileOnline(t *testing.T) {
 	_, _, status, err = fixture.app.loadDeviceLiveStatus(context.Background(), device.ID)
 	if err != nil || !status.GraphicalSessionActive || !status.Counting {
 		t.Fatalf("active graphical session not reflected in live status: %+v err=%v", status, err)
+	}
+	if _, err := fixture.store.ReceiveHeartbeat(context.Background(), device.ID, protocol.HeartbeatRequest{
+		PolicyRevision: 2, LocalDate: "2026-08-09", SecondsUsed: 1,
+	}, fixture.now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, _, status, err = fixture.app.loadDeviceLiveStatus(context.Background(), device.ID)
+	if err != nil || status.GraphicalSessionActive || status.Counting || status.UsedSeconds != 1 {
+		t.Fatalf("ended graphical session did not pause live status: %+v err=%v", status, err)
 	}
 }
 

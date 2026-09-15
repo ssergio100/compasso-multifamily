@@ -91,7 +91,8 @@ func New(
 	mux.HandleFunc("/api/v1/admin/account/email", app.adminAccountEmailAPI)
 	mux.HandleFunc("/api/v1/admin/devices", app.adminDevicesAPI)
 	mux.HandleFunc("/api/v1/admin/devices/", app.adminDeviceAPI)
-	app.handler = app.corsHeaders(securityHeaders(app.logAdministrativeCommunication(mux), secureCookies))
+	mux.HandleFunc("/", app.notFound)
+	app.handler = diagnosticRequests(app.corsHeaders(securityHeaders(app.logAdministrativeCommunication(mux), secureCookies)))
 	return app, nil
 }
 
@@ -138,6 +139,10 @@ func (a *App) health(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (a *App) notFound(w http.ResponseWriter, _ *http.Request) {
+	writeJSONError(w, http.StatusNotFound, "not found")
 }
 
 func (a *App) authenticated(r *http.Request) (session, string, bool) {

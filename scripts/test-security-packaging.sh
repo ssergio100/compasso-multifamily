@@ -7,6 +7,7 @@ server_backup_service="${project_root}/packaging/systemd/compasso-server-backup.
 server_backup_timer="${project_root}/packaging/systemd/compasso-server-backup.timer"
 agent_configuration_helper="${project_root}/agent/cmd/tempo-agent-configure/main.go"
 dockerfile="${project_root}/server/Dockerfile"
+server_compose="${project_root}/compose.yaml"
 admin_compose="${project_root}/deploy/admin-ui/compose.yml"
 admin_nginx="${project_root}/deploy/admin-ui/default.conf"
 dockerignore="${project_root}/.dockerignore"
@@ -71,6 +72,7 @@ fi
 grep -Fqx 'USER tempo-server:tempo-server' "${dockerfile}"
 grep -Fq 'org.opencontainers.image.licenses="AGPL-3.0-or-later"' "${dockerfile}"
 grep -Fq 'COPY --chown=root:root LICENSE THIRD_PARTY_NOTICES.md' "${dockerfile}"
+grep -Fq 'TZ: ${COMPASSO_TIME_ZONE:-America/Sao_Paulo}' "${server_compose}"
 if grep -Eq 'server/web/(templates|static)' "${dockerfile}"; then
   echo "erro: imagem da API ainda copia o frontend" >&2
   exit 1

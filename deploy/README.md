@@ -12,7 +12,9 @@ A API usa o [`compose.yaml`](../compose.yaml) da raiz e é distribuída pelo pac
 - `.env.example`: bind, porta e diretório do build;
 - `default.conf`: fallback de SPA, healthcheck e cabeçalhos básicos;
 - `runtime-config.js`: exemplo que aponta a interface para a API no mesmo host,
-  porta `8181`.
+  porta `8181`;
+- `release.env.example`: exemplo da publicação do pacote do agente no mesmo
+  servidor estático.
 
 Fluxo manual:
 
@@ -52,6 +54,28 @@ Depois, cada atualização exige somente:
 ```bash
 make publish-admin-ui
 ```
+
+## Download do agente
+
+O `.deb` não integra o histórico Git nem o build da interface. Ele é publicado
+como arquivo versionado no diretório estático do painel, junto do SHA-256 e do
+manifesto consultado pela interface:
+
+```text
+/downloads/compasso-client_<versão>_amd64.deb
+/downloads/compasso-client_<versão>_amd64.deb.sha256
+/downloads/agent-release.json
+```
+
+Crie `.private/deploy/client-release.env` a partir de
+`deploy/admin-ui/release.env.example` e execute:
+
+```bash
+make publish-client-release
+```
+
+O manifesto é enviado por último e sem cache. Os pacotes são imutáveis: para
+publicar conteúdo diferente, incremente antes a versão Debian.
 
 Configurações específicas de máquinas, ferramentas auxiliares de inspeção e
 composes pessoais devem ficar em `.private/deploy/`, que é ignorado pelo Git.

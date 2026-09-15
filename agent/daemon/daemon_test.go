@@ -371,7 +371,7 @@ func TestLockedSessionConsumesAlertWithoutDeliveringItAfterUnlock(t *testing.T) 
 		t.Fatal(err)
 	}
 	locked, err := policyDaemon.Step(ctx, start.Add(time.Minute))
-	if err != nil || len(locked.DueAlerts) != 0 {
+	if err != nil || len(locked.DueAlerts) != 0 || locked.UsageSeconds != 60 {
 		t.Fatalf("locked session alerts=%+v err=%v", locked.DueAlerts, err)
 	}
 	sessions.locked["3"] = false
@@ -513,6 +513,51 @@ func TestNoGraphicalSessionDoesNotCount(t *testing.T) {
 	status, err := daemon.Step(ctx, start.Add(30*time.Second))
 	if err != nil || status.UsageSeconds != 0 {
 		t.Fatalf("non-graphical status=%+v err=%v", status, err)
+	}
+}
+
+func TestGraphicalLogoutStopsUsageWhileLogindSessionLingersOnline(t *testing.T) {
+	ctx := context.Background()
+	store := testStore(t)
+	defer store.Close()
+	start := time.Date(2026, time.August, 10, 14, 0, 0, 0, time.Local)
+	if err := store.ReplacePolicy(ctx, testPolicy(1, start.Weekday(), time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	sessions := graphicalFake()
+	synchronization := &fakeSynchronizationSource{online: true}
+	policyDaemon, _ := New(store, sessions, "child", time.Second)
+	policyDaemon.SetSynchronizationSource(synchronization)
+	if err := store.SaveConfirmedSessionState(ctx, storage.ConfirmedSessionState{
+		Revision: 1, SessionID: "3", LocalDate: start.Format("2006-01-02"),
+		RemainingSeconds: 3600, ConfirmedAt: start,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := policyDaemon.Step(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	active, err := policyDaemon.Step(ctx, start.Add(4*time.Second))
+	if err != nil || active.UsageSeconds != 4 || !active.GraphicalSession || !synchronization.graphicalSessionActive {
+		t.Fatalf("active session status=%+v synchronized=%+v err=%v", active, synchronization, err)
+	}
+
+	// logind may keep a graphical session as "online" briefly after logout. It
+	// is no longer established as the active local desktop and must not keep the
+	// counter running or be advertised in the next heartbeat.
+	sessions.sessions[0].State = "online"
+	loggedOut, err := policyDaemon.Step(ctx, start.Add(5*time.Second))
+	if err != nil || loggedOut.UsageSeconds != 5 || loggedOut.GraphicalSession || synchronization.graphicalSessionActive || synchronization.graphicalSessionID != "" {
+		t.Fatalf("logout transition status=%+v synchronized=%+v err=%v", loggedOut, synchronization, err)
+	}
+	afterLogout, err := policyDaemon.Step(ctx, start.Add(35*time.Second))
+	if err != nil || afterLogout.UsageSeconds != 5 || afterLogout.GraphicalSession {
+		t.Fatalf("usage continued after logout: status=%+v err=%v", afterLogout, err)
+	}
+	durable, err := store.LoadDailyUsage(ctx, start.Format("2006-01-02"))
+	if err != nil || durable.SecondsUsed != 5 {
+		t.Fatalf("durable usage after logout=%+v err=%v", durable, err)
 	}
 }
 

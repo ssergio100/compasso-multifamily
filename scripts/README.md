@@ -18,6 +18,7 @@ Execute estes alvos a partir da raiz do repositório:
 | Gerar e validar cliente e servidor com a mesma versão | `make package-all` |
 | Gerar o pacote Debian do servidor | `make package-server` |
 | Validar um pacote existente do servidor | `make test-server-package` |
+| Gerar, validar e publicar o agente para download | `make publish-client-release` |
 | Gerar, validar e publicar o servidor | `make publish-server` |
 | Compilar e publicar a interface administrativa | `make publish-admin-ui` |
 
@@ -132,6 +133,26 @@ cliente, gera os dois pacotes e valida ambos. Chama os cinco scripts de build e
 teste descritos acima; não duplica internamente suas implementações.
 
 ### Publicação
+
+#### `publish-client-release.sh`
+
+Compila os binários portáteis, gera e valida o `.deb`, envia o pacote e seu
+SHA-256 para o diretório de downloads e publica por último o manifesto
+`agent-release.json`. A troca atômica do manifesto impede que a interface
+aponte para um envio parcial. Uma versão existente só pode ser republicada se
+o conteúdo tiver exatamente o mesmo checksum.
+
+Destino, diretório e origem pública podem ficar no arquivo local ignorado
+`.private/deploy/client-release.env`. Use como base
+`deploy/admin-ui/release.env.example`. Com esse arquivo configurado, o fluxo é:
+
+```bash
+make publish-client-release
+```
+
+O script não remove versões anteriores. O pacote e o manifesto ficam
+disponíveis em `/downloads/`; a `admin-ui` consulta o manifesto em tempo de
+execução, portanto uma nova versão do agente não exige recompilar o painel.
 
 #### `publish-admin-ui.sh`
 

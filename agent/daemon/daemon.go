@@ -46,7 +46,7 @@ type Daemon struct {
 	trackerDate           string
 	lastAt                time.Time
 	lastShouldCount       bool
-	lastHadSession        bool
+	lastHadActiveSession  bool
 	lastCountUntil        time.Time
 	fraction              time.Duration
 	lockAttempts          map[string]time.Time
@@ -111,6 +111,7 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 	}
 	graphical := graphicalSessions(allSessions)
 	activeGraphicalSessionID := establishedGraphicalSessionID(graphical)
+	activeGraphicalSession := activeGraphicalSessionID != ""
 	lockedSessions := make(map[string]bool)
 	activeSessions := make(map[string]bool)
 	for _, current := range graphical {
@@ -137,7 +138,7 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 		}
 	}
 	if d.synchronizationSource != nil {
-		d.synchronizationSource.SetGraphicalSession(activeGraphicalSessionID != "", activeGraphicalSessionID, activeGraphicalSessionLocked)
+		d.synchronizationSource.SetGraphicalSession(activeGraphicalSession, activeGraphicalSessionID, activeGraphicalSessionLocked)
 	}
 	pendingControl, hasPendingControl, err := d.store.PendingControlEffect(ctx)
 	if err != nil {
@@ -168,7 +169,7 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 		}
 	} else if d.trackerDate != localDate {
 		midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-		if d.lastShouldCount && d.lastHadSession {
+		if d.lastShouldCount && d.lastHadActiveSession {
 			beforeMidnight := cappedElapsed(d.lastAt, midnight, d.lastCountUntil)
 			if err := d.addElapsed(ctx, beforeMidnight, midnight); err != nil {
 				return Status{}, fmt.Errorf("account usage before local midnight: %w", err)
@@ -181,13 +182,13 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 		if err != nil {
 			return Status{}, err
 		}
-		if newDayDecision.ShouldCount && len(graphical) != 0 {
+		if newDayDecision.ShouldCount && activeGraphicalSession {
 			afterMidnight := cappedElapsed(midnight, now, newDayDecision.NextBlockAt)
 			if err := d.addElapsed(ctx, afterMidnight, now); err != nil {
 				return Status{}, fmt.Errorf("account usage after local midnight: %w", err)
 			}
 		}
-	} else if !d.lastAt.IsZero() && d.lastShouldCount && d.lastHadSession {
+	} else if !d.lastAt.IsZero() && d.lastShouldCount && d.lastHadActiveSession {
 		elapsed := cappedElapsed(d.lastAt, now, d.lastCountUntil)
 		if err := d.addElapsed(ctx, elapsed, now); err != nil {
 			return Status{}, fmt.Errorf("account allowed usage: %w", err)
@@ -220,7 +221,7 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 		}
 	}
 	status := Status{
-		Decision: decision, GraphicalSession: len(graphical) != 0,
+		Decision: decision, GraphicalSession: activeGraphicalSession,
 		AwaitingSynchronization: awaitingSynchronization,
 		UsageSeconds:            d.tracker.Seconds(),
 	}
@@ -236,7 +237,7 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 	// failure must not cause the same elapsed interval to be counted twice.
 	d.lastAt = now
 	d.lastShouldCount = decision.ShouldCount
-	d.lastHadSession = len(graphical) != 0
+	d.lastHadActiveSession = activeGraphicalSession
 	d.lastCountUntil = decision.NextBlockAt
 	if awaitingSynchronization {
 		return status, nil

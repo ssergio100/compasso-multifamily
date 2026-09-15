@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ssergio100/compasso/agent/localauth"
+	protocol "github.com/ssergio100/compasso/protocol/v1"
 	"github.com/ssergio100/compasso/server/storage"
 )
 
@@ -171,8 +172,8 @@ func (a *App) accountConfirmAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err := a.store.ConfirmRegistration(r.Context(), hashAccountToken(request.Token), a.now())
 	if errors.Is(err, storage.ErrFamilyLimit) || errors.Is(err, storage.ErrPilotNotReady) {
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": "registrations are temporarily closed", "code": "registrations_closed",
+		writeJSONErrorResponse(w, http.StatusConflict, protocol.ErrorResponse{
+			Error: "registrations are temporarily closed", Code: "registrations_closed",
 		})
 		return
 	}

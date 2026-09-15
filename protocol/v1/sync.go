@@ -117,6 +117,7 @@ type CreditIncrementPayload struct {
 type ErrorResponse struct {
 	Error          string `json:"error"`
 	Code           string `json:"code,omitempty"`
+	CorrelationID  string `json:"correlation_id,omitempty"`
 	ClientRevision int64  `json:"client_revision,omitempty"`
 	ServerRevision int64  `json:"server_revision,omitempty"`
 }

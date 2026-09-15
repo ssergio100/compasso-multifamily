@@ -147,6 +147,7 @@ func (a *App) corsHeaders(next http.Handler) http.Handler {
 			}
 			w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Expose-Headers", correlationIDHeader+", "+errorCodeHeader)
 			w.Header().Set("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {

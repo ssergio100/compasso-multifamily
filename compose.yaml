@@ -15,6 +15,7 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
+      TZ: ${COMPASSO_TIME_ZONE:-America/Sao_Paulo}
       TEMPO_ADMIN_ORIGIN: ${COMPASSO_ADMIN_ORIGIN:-same-host}
       TEMPO_SECURE_COOKIES: ${COMPASSO_SECURE_COOKIES:-false}
       TEMPO_HEARTBEAT_INTERVAL: ${COMPASSO_HEARTBEAT_INTERVAL:-3s}

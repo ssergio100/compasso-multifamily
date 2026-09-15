@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -56,6 +57,18 @@ type statusCapturingResponseWriter struct {
 	status int
 }
 
+type flushingStatusCapturingResponseWriter struct {
+	*statusCapturingResponseWriter
+}
+
+func captureResponseStatus(w http.ResponseWriter) (*statusCapturingResponseWriter, http.ResponseWriter) {
+	recorder := &statusCapturingResponseWriter{ResponseWriter: w}
+	if _, ok := w.(http.Flusher); ok {
+		return recorder, &flushingStatusCapturingResponseWriter{statusCapturingResponseWriter: recorder}
+	}
+	return recorder, recorder
+}
+
 func (w *statusCapturingResponseWriter) WriteHeader(status int) {
 	if w.status == 0 {
 		w.status = status
@@ -77,6 +90,37 @@ func (w *statusCapturingResponseWriter) statusCode() int {
 	return w.status
 }
 
+func (w *flushingStatusCapturingResponseWriter) Flush() {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	w.ResponseWriter.(http.Flusher).Flush()
+}
+
+// diagnosticRequests assigns one server-generated identifier to every HTTP
+// request. Error responses return it to the caller and rejected requests are
+// logged without their body, credentials, cookies or query string.
+func diagnosticRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		correlationID, _ := randomToken()
+		if correlationID != "" {
+			w.Header().Set(correlationIDHeader, correlationID)
+		}
+		recorder, wrapped := captureResponseStatus(w)
+		next.ServeHTTP(wrapped, r)
+		status := recorder.statusCode()
+		errorCode := w.Header().Get(errorCodeHeader)
+		if status < http.StatusBadRequest {
+			return
+		}
+		if status < http.StatusInternalServerError && errorCode != "origin_not_allowed" && errorCode != "invalid_csrf_token" && errorCode != "" {
+			return
+		}
+		log.Printf("request rejected correlation_id=%s method=%s path=%q status=%d error_code=%s",
+			correlationID, r.Method, r.URL.Path, status, errorCode)
+	})
+}
+
 func (a *App) logAdministrativeCommunication(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, operation, route, shouldLog := administrativeCommunication(r)
@@ -85,10 +129,7 @@ func (a *App) logAdministrativeCommunication(next http.Handler) http.Handler {
 			return
 		}
 		started := time.Now()
-		correlationID, _ := randomToken()
-		if correlationID != "" {
-			w.Header().Set("X-Compasso-Correlation-ID", correlationID)
-		}
+		correlationID := w.Header().Get(correlationIDHeader)
 		recorder := &statusCapturingResponseWriter{ResponseWriter: w}
 		wrapped := communicationDetailsContext(r)
 		next.ServeHTTP(recorder, wrapped)

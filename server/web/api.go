@@ -14,15 +14,16 @@ import (
 	"github.com/ssergio100/compasso/server/storage"
 )
 
-const deviceIDHeader = "X-Tempo-Device-ID"
+const (
+	deviceIDHeader      = "X-Tempo-Device-ID"
+	correlationIDHeader = "X-Compasso-Correlation-ID"
+	errorCodeHeader     = "X-Compasso-Error-Code"
+)
 
 func (a *App) heartbeat(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	deviceID := strings.TrimSpace(r.Header.Get(deviceIDHeader))
-	correlationID, _ := randomToken()
-	if correlationID != "" {
-		w.Header().Set("X-Compasso-Correlation-ID", correlationID)
-	}
+	correlationID := w.Header().Get(correlationIDHeader)
 	protocolVersion := strings.TrimSpace(r.Header.Get(protocol.VersionHeader))
 	if protocolVersion == "" {
 		protocolVersion = "1"
@@ -301,12 +302,99 @@ func heartbeatCarriedState(details map[string]string) bool {
 }
 
 func writeJSONError(w http.ResponseWriter, status int, message string) {
-	writeJSONErrorResponse(w, status, protocol.ErrorResponse{Error: message})
+	writeJSONErrorResponse(w, status, protocol.ErrorResponse{Error: message, Code: stableErrorCode(status, message)})
 }
 
 func writeJSONErrorResponse(w http.ResponseWriter, status int, response protocol.ErrorResponse) {
+	if response.Code == "" {
+		response.Code = stableErrorCode(status, response.Error)
+	}
+	if response.CorrelationID == "" {
+		response.CorrelationID = w.Header().Get(correlationIDHeader)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set(errorCodeHeader, response.Code)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+func stableErrorCode(status int, message string) string {
+	if strings.HasPrefix(message, "Este intervalo já está ocupado pela rotina") {
+		return "routine_conflict"
+	}
+	if code, ok := map[string]string{
+		"method not allowed":                          "method_not_allowed",
+		"origin not allowed":                          "origin_not_allowed",
+		"invalid CSRF token":                          "invalid_csrf_token",
+		"invalid credentials":                         "invalid_credentials",
+		"authentication required":                     "authentication_required",
+		"too many login attempts":                     "login_rate_limited",
+		"too many requests":                           "rate_limited",
+		"invalid registration":                        "invalid_registration",
+		"could not secure account":                    "account_security_failed",
+		"could not begin registration":                "registration_start_failed",
+		"could not request confirmation":              "confirmation_request_failed",
+		"could not request password reset":            "password_reset_request_failed",
+		"invalid or expired confirmation":             "confirmation_invalid_or_expired",
+		"invalid password reset":                      "password_reset_invalid",
+		"could not secure password":                   "password_security_failed",
+		"invalid or expired password reset":           "password_reset_invalid_or_expired",
+		"invalid password":                            "invalid_password",
+		"current password is invalid":                 "current_password_invalid",
+		"family name does not match":                  "family_name_mismatch",
+		"could not delete account":                    "account_delete_failed",
+		"could not change password":                   "password_change_failed",
+		"current password or e-mail is invalid":       "account_identity_invalid",
+		"e-mail is unavailable":                       "email_unavailable",
+		"could not change e-mail":                     "email_change_failed",
+		"account e-mail delivery is unavailable":      "email_delivery_unavailable",
+		"could not load devices":                      "devices_load_failed",
+		"family device limit reached":                 "device_limit_reached",
+		"invalid device":                              "invalid_device",
+		"not found":                                   "not_found",
+		"device not found":                            "device_not_found",
+		"could not authorize device":                  "device_authorization_failed",
+		"could not load audit events":                 "audit_events_load_failed",
+		"could not load device":                       "device_load_failed",
+		"device or resource not found":                "device_resource_not_found",
+		"password and confirmation must match":        "password_confirmation_mismatch",
+		"could not update password":                   "device_password_update_failed",
+		"bonus must be between 1 minute and 12 hours": "invalid_bonus",
+		"limit must be between 1 and 200":             "invalid_limit",
+		"limit must be between 1 and 500":             "invalid_limit",
+		"current account password is invalid":         "current_account_password_invalid",
+		"after must be a non-negative integer":        "invalid_cursor",
+		"could not load communication settings":       "communication_settings_load_failed",
+		"streaming not supported":                     "streaming_unavailable",
+		"unsupported protocol version":                "unsupported_protocol_version",
+		"invalid installation identity":               "invalid_installation_identity",
+		"could not inspect pending operations":        "pending_operations_inspection_failed",
+		"invalid heartbeat payload":                   "invalid_heartbeat_payload",
+		"heartbeat rejected":                          "heartbeat_rejected",
+		"invalid request":                             "invalid_request",
+		"internal error":                              "internal_error",
+	}[message]; ok {
+		return code
+	}
+	switch status {
+	case http.StatusBadRequest:
+		return "invalid_request"
+	case http.StatusUnauthorized:
+		return "authentication_required"
+	case http.StatusForbidden:
+		return "request_forbidden"
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusMethodNotAllowed:
+		return "method_not_allowed"
+	case http.StatusConflict:
+		return "request_conflict"
+	case http.StatusTooManyRequests:
+		return "rate_limited"
+	case http.StatusServiceUnavailable:
+		return "service_unavailable"
+	default:
+		return "internal_error"
+	}
 }

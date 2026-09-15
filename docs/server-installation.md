@@ -60,6 +60,10 @@ COMPASSO_SMTP_PASSWORD=segredo
 COMPASSO_SMTP_FROM=contas@exemplo.com
 ```
 
+`COMPASSO_TIME_ZONE` deve conter o fuso IANA usado pelos dispositivos atendidos,
+por exemplo `America/Sao_Paulo`. A API usa esse fuso para apresentar o estado
+atual das rotinas; os registros persistidos continuam em UTC.
+
 Em uma implantação pública, `COMPASSO_ADMIN_ORIGIN` deve conter a origem HTTPS
 exata do painel, por exemplo `https://compasso.exemplo.com`. Esse valor protege
 as chamadas do navegador e também forma os links enviados por e-mail. O modo
@@ -89,6 +93,23 @@ política e o consumo centrais.
 limitados e com erro `5xx`, além do histograma de latência em formato
 Prometheus. Restrinja esse endpoint à rede de monitoramento no proxy público.
 Ele não contém IDs de família ou dispositivo.
+
+### Diagnóstico de erros da API
+
+Toda resposta JSON de erro contém `error`, um `code` estável e um
+`correlation_id` exclusivo. Os mesmos valores são enviados nos cabeçalhos
+`X-Compasso-Error-Code` e `X-Compasso-Correlation-ID`; o CORS os expõe somente
+à origem administrativa autorizada. A interface traduz códigos conhecidos
+para instruções em português e apresenta o código e a referência que devem ser
+informados ao suporte.
+
+Falhas `5xx`, origem administrativa recusada, CSRF inválido e respostas sem
+código reconhecido são registradas com a mesma referência. O log não inclui
+corpo, cookies, credenciais ou query string. Para localizar um incidente:
+
+```bash
+sudo docker compose logs compasso-api | grep 'correlation_id=REFERENCIA'
+```
 
 ## Operação
 

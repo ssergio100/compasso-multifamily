@@ -285,13 +285,183 @@ inventário de hardware ou interfaces descontinuadas.
   timer/arquivo de backup e espaço disponível, e confirmar o e-mail da conta
   migrada.
 
+### 2026-09-14 — início da implantação pública paralela
+
+- O ambiente existente em `192.168.18.10` foi mantido: API e painel antigos
+  continuam saudáveis nas portas `8181` e `8182`.
+- Criado um stack novo e independente em `/srv/docker/compose/family`, com
+  banco vazio em `/srv/docker/volumes/family/server` e build estático em
+  `/srv/sites/family-ui`. Os containers `family-api` e `family-ui` estão
+  saudáveis e escutam somente em `127.0.0.1:8281` e `127.0.0.1:8282`.
+- O painel usa `https://apifamily.smresume.com`; a API aceita como origem
+  administrativa somente `https://family.smresume.com`, exige cookies seguros
+  e mantém `TEMPO_REQUIRE_INSTALLATION_IDENTITY=false` para a coexistência
+  inicial dos agentes.
+- A configuração do Cloudflare Tunnel recebeu os dois ingressos e passou em
+  `cloudflared tunnel ingress validate`. O arquivo anterior foi preservado em
+  `/srv/cloudflare/config.yml.before-family-20260914`. Após a correção dos
+  registros DNS, as regras foram limpas, o túnel foi reiniciado e os quatro
+  endpoints novos e antigos responderam por HTTPS. Uma regra anterior ao
+  ingresso da API responde `404` especificamente para `/metrics`, mantendo as
+  métricas disponíveis apenas pelo endereço local.
+- Instalado backup diário às `03:23` pelo `crontab` de `sergio`, sem container
+  permanente adicional. O primeiro arquivo ficou em
+  `/srv/docker/backups/family`, modo `0600`, e uma restauração descartável da
+  cópia respondeu com sucesso ao healthcheck.
+- `make test` passou integralmente antes do deploy. No servidor foram validados
+  healthchecks locais, CORS da origem pública, configuração em tempo de
+  execução do painel, métricas e hardening dos dois containers. Em navegador
+  real, o painel público carregou login e criação de conta sem erro no console.
+- O domínio de envio `notify.smresume.com` foi verificado no Resend e os quatro
+  valores SMTP foram configurados sem expor a chave. A API foi recriada,
+  reconheceu o mailer e permaneceu saudável. Conexão, STARTTLS, autenticação e
+  envio passaram usando o endereço oficial `delivered@resend.dev`; ainda falta
+  comprovar confirmação e recuperação com uma conta real do piloto.
+
+### 2026-09-14 — distribuição pública do agente
+
+- A `admin-ui` vigente passou a ler `/downloads/agent-release.json` em tempo de
+  execução. O download aparece depois da confirmação de uma conta e na seção
+  **Liberar acesso do agente**, junto da versão, arquitetura e SHA-256.
+- Os estados curtos de e-mail enviado e confirmado ficam centralizados em telas
+  pequenas; formulários permanecem alinhados à esquerda. O cadastro repete o
+  e-mail normalizado informado e a recuperação mantém a resposta condicional
+  para não enumerar contas.
+- O assistente gráfico do pacote oficial sugere
+  `https://apifamily.smresume.com`. A configuração efetiva continua sendo
+  gravada somente quando `server_url`, `device_id` e `device_token` estiverem
+  completos; atualizações preservam o conffile existente.
+- Criado `scripts/publish-client-release.sh` e o alvo
+  `make publish-client-release`. O fluxo compila os binários portáteis, gera e
+  valida o `.deb`, impede substituir uma versão por conteúdo diferente, envia
+  pacote e checksum e troca o manifesto por último. Versões antigas não são
+  removidas automaticamente.
+- O Nginx do `family-ui` passou a servir `/downloads/` sem fallback para a SPA e
+  sem cache do manifesto. Configuração validada com `nginx -t`; arquivo ausente
+  responde `404`.
+- Publicado `compasso-client_0.1.0~pilot31_amd64.deb` em
+  `https://family.smresume.com/downloads/`, SHA-256
+  `3ab48851cc60c9ebe8e6e7cb1f5648d62e7f2c1e6de034c3710638c714a62bf3`.
+  O pacote foi baixado novamente pelo endereço público, teve checksum,
+  metadados e URL padrão conferidos, e o manifesto público retornou JSON com
+  `Cache-Control: no-store`.
+- A interface foi publicada em `/srv/sites/family-ui`; a inspeção no navegador
+  não encontrou erros de console. `make test` passou integralmente depois das
+  mudanças.
+
+### 2026-09-14 — correção do fuso das rotinas
+
+- Um caso real no Compasso anterior revelou divergência entre agente e painel:
+  Arthur continuava contabilizando em horário de Brasília, mas a API em UTC
+  apresentava **Contagem de tempo: Parada** ao considerar antecipadamente a
+  rotina Dormir, das 22:00 às 08:00.
+- As APIs `compasso` e `family` passaram a executar com
+  `TZ=America/Sao_Paulo`. A mudança afeta a interpretação local de dias e
+  horários; timestamps persistidos e enviados continuam em UTC. Não houve
+  alteração de banco, saldo, política, interface ou agente.
+- Somente os containers de API foram recriados. Os arquivos anteriores foram
+  preservados em
+  `/srv/docker/compose/compasso/compose.yaml.before-timezone-20260914` e
+  `/srv/docker/compose/family/compose.yaml.before-timezone-20260914`.
+- No Compasso, Arthur reconectou com sessão ativa e o uso avançou de 22.337 para
+  23.193 segundos, compatível com o intervalo transcorrido e sem perda. No
+  `family`, Zorin também reconectou com sessão ativa. As duas APIs ficaram
+  saudáveis e os endpoints públicos do `family` responderam `200`.
+- A primeira recriação do Compasso revelou que sua configuração durável ainda
+  continha `COMPASSO_ADMIN_ORIGIN=same-host`, embora a interface já usasse a
+  API pública separada. Isso fez a API responder `403 origin not allowed`.
+  O `.env` foi corrigido para permitir somente
+  `https://compasso.smresume.com` e usar cookies seguros; a versão anterior
+  ficou em `/srv/docker/compose/compasso/.env.before-public-origin-20260914`.
+  Pelo endereço público, a abertura de sessão passou a responder `200` com CORS
+  restrito à origem correta, e um login com credenciais fictícias chegou à
+  autenticação e respondeu `401`, em vez de `403`. Arthur reconectou novamente
+  e o uso continuou avançando, sem perda.
+- O Compose versionado agora expõe `COMPASSO_TIME_ZONE`, com padrão
+  `America/Sao_Paulo`, e a validação de empacotamento impede remover essa
+  configuração sem perceber. Se o serviço passar a atender simultaneamente
+  famílias em fusos diferentes, o fuso deverá migrar de configuração da
+  implantação para configuração por família ou dispositivo.
+
+### 2026-09-14 — erros diagnosticáveis no `family`
+
+- Implementado localmente um contrato uniforme para erros da API: toda resposta
+  JSON de erro contém uma mensagem segura, um código estável e um identificador
+  de correlação exclusivo. Os mesmos dados também seguem em cabeçalhos expostos
+  somente à origem administrativa autorizada.
+- A interface administrativa vigente traduz os códigos conhecidos para
+  mensagens em português e apresenta `Código` e `Referência`. Falhas de rede,
+  proxy, origem, CSRF, sessão e endereço incorreto agora são distinguíveis sem
+  exibir detalhes internos nem permitir enumeração de contas.
+- A API registra com a mesma referência somente falhas que exigem investigação:
+  erros `5xx`, origem recusada, CSRF inválido e respostas sem código. Corpo,
+  cookies, credenciais e query string não entram nesse log.
+- Cobertura adicionada para código e correlação no corpo e nos cabeçalhos,
+  unicidade da referência, rotas inexistentes e preservação de mensagens
+  genéricas nos erros sensíveis. `make test` passou integralmente.
+- Publicada a imagem `family-api:0.1.0-family2`; somente a API foi recriada e o
+  volume `/srv/docker/volumes/family/server` permaneceu montado. A interface
+  vigente também foi publicada em `/srv/sites/family-ui`. Os backups anteriores
+  ficaram em
+  `/srv/docker/compose/family/backups/source-before-diagnostics-20260914`,
+  `env-before-diagnostics-20260914` e `ui-before-diagnostics-20260914`.
+- O healthcheck público respondeu `200`. Uma chamada sem sessão respondeu `401`
+  com `authentication_required`; uma origem inválida respondeu `403` com
+  `origin_not_allowed`, e sua referência foi localizada sem divergência no log
+  do container. No navegador, credenciais fictícias exibiram “E-mail ou senha
+  inválidos”, o código e a referência; a única mensagem de console foi o `401`
+  esperado dessa tentativa controlada.
+
+### 2026-09-14 — pausa da contagem após logout
+
+- Identificada a divergência no agente: a presença enviada no heartbeat já
+  exigia uma sessão gráfica `active`, mas a contabilização local aceitava
+  também sessões gráficas residuais que o `logind` mantém no estado `online`.
+  Após o logout, o painel podia indicar sessão ausente enquanto o saldo local
+  continuava sendo consumido.
+- A contabilização, a situação exposta pelo daemon e o heartbeat agora usam a
+  mesma definição: somente uma sessão gráfica local `active`. O intervalo já
+  observado antes da transição é preservado uma única vez; ciclos posteriores
+  ao logout não acrescentam uso.
+- Adicionado teste de regressão com sessão ativa, consumo, transição para
+  `online`, mais trinta segundos sem sessão ativa, persistência do saldo e
+  estado preparado para o próximo heartbeat. O teste web também confirma
+  `graphical_session_active=false` e `counting=false` depois desse heartbeat.
+- O bloqueio de tela foi protegido por teste separado: uma sessão que continua
+  `active`, mesmo bloqueada, mantém a contagem como antes. Não houve mudança de
+  banco, protocolo, API nem interface.
+- `make test` passou integralmente. Publicado o
+  `compasso-client_0.1.0~pilot32_amd64.deb`, SHA-256
+  `44891d1a968d6a60e36638e5a6e8dd3babeac0b81d4384e5424d219630f737eb`, em
+  `https://family.smresume.com/downloads/`. O pacote, o checksum e o manifesto
+  público foram validados; o `pilot31` foi preservado.
+
+### Pendências confirmadas pelo uso real
+
+1. **Erros diagnosticáveis — concluídos no `family`; Compasso pendente.** O
+   mecanismo está implementado, publicado e validado ponta a ponta no `family`.
+   Falta portar a correção de forma independente para o projeto antigo,
+   preservando suas diferenças de implantação e interface.
+2. **Fuso independente da localização do servidor.** O ajuste global para
+   `America/Sao_Paulo` é somente o hotfix seguro para os dispositivos atuais.
+   A solução definitiva deve guardar um fuso IANA por dispositivo, obtido do
+   agente e validado pelo servidor, mantendo timestamps persistidos em UTC. A
+   avaliação de dia da semana, rotinas e próximo bloqueio deve usar o fuso do
+   dispositivo e continuar correta com horário de verão, mudança de local e
+   servidor hospedado em qualquer país. Agentes antigos devem usar um fallback
+   explícito durante a migração.
+3. **Fim da sessão gráfica — implementado e publicado; validação real
+   pendente.** O `pilot32` interrompe a contagem quando a sessão deixa de estar
+   ativa e o painel recebe o mesmo estado no heartbeat. Falta validar o ciclo em
+   uma máquina controlada real. Bloquear a tela continua sendo um evento
+   diferente e não pausa a contagem.
+
 ## Próximo passo exato
 
-Gravar o checkpoint final local. A próxima sessão não deve alterar novamente o
-produto para “resolver” a abertura: deve receber o destino público e os valores
-operacionais autorizados, implantar na ordem agente primeiro/servidor depois e
-executar o checklist real acima. Somente após essas evidências deve marcar o
-marco 4 e liberar a segunda família.
+Instalar o `pilot32` em uma máquina controlada e validar o caso real: anotar o
+uso, encerrar a sessão gráfica, aguardar um heartbeat, confirmar sessão ausente
+e contagem parada no painel e verificar que o uso não cresce. Entrar novamente
+deve retomar a contagem sem perder nem duplicar o saldo anterior.
 
 ## Validação acumulada
 
@@ -313,6 +483,12 @@ marco 4 e liberar a segunda família.
 - `go test ./agent/syncclient ./server/storage ./server/web
   ./server/cmd/tempo-server` — aprovado após o vínculo, os novos erros, limites,
   métricas e a redução de escrita/log/SSE do marco 3.
+- `make test` — aprovado integralmente após o contrato de erros diagnosticáveis
+  do `family`, incluindo Go, interface local, `admin-ui`, migrações, backup,
+  hardening, documentação e builds.
+- `make test` — aprovado integralmente após alinhar contabilização, heartbeat e
+  apresentação ao estado gráfico `active`; o pacote `pilot32` também passou na
+  validação Debian antes da publicação.
 - teste de carga opt-in — aprovado com 500 agentes, uma hora lógica, 120.000
   heartbeats, zero erro, p95 de 2,380056 ms e 163.840 bytes de crescimento.
 - `make test` — aprovado integralmente ao concluir o marco 3: `go vet`, todos

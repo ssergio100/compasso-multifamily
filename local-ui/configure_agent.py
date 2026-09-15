@@ -16,7 +16,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, Gtk
 
 
-DEFAULT_SERVER_URL = ""
+DEFAULT_SERVER_URL = "https://apifamily.smresume.com"
 SETUP_MARKER_PATH = "/etc/tempo-agent/setup-complete"
 PRIVILEGED_HELPER_PATH = "/usr/sbin/tempo-agent-configure"
 PKEXEC_PATH = "/usr/bin/pkexec"

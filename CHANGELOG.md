@@ -20,6 +20,8 @@ há uma versão pública estável, as mudanças relevantes permanecem em
 - projeto relicenciado sob a GNU Affero General Public License v3.0 ou
   posterior (`AGPL-3.0-or-later`), com avisos de componentes de terceiros nos
   artefatos distribuídos.
+- a contabilização do agente agora é interrompida quando a sessão gráfica local
+  deixa o estado `active`; bloquear a tela não altera a contagem.
 
 ### Segurança
 

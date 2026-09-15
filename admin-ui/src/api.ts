@@ -9,6 +9,123 @@ const envBase = (import.meta.env.VITE_COMPASSO_API_BASE_URL ?? "").trim();
 const visualPreview = import.meta.env.DEV && new URLSearchParams(window.location.search).get("preview") === "visuals";
 export const remoteMode = !visualPreview && (import.meta.env.VITE_COMPASSO_REMOTE === "true" || Boolean(runtimeBase || envBase || productionAPIBase));
 
+type APIErrorPayload = {
+  error?: unknown;
+  code?: unknown;
+  correlation_id?: unknown;
+};
+
+const API_ERROR_MESSAGES: Record<string, string> = {
+  invalid_credentials: "E-mail ou senha inválidos.",
+  authentication_required: "Sua sessão expirou. Entre novamente.",
+  invalid_csrf_token: "Sua sessão de segurança expirou. Atualize a página e tente novamente.",
+  origin_not_allowed: "Este endereço da interface não está autorizado pela API.",
+  login_rate_limited: "Muitas tentativas de entrada. Aguarde 15 minutos e tente novamente.",
+  rate_limited: "Muitas solicitações em pouco tempo. Aguarde e tente novamente.",
+  invalid_registration: "Revise os dados do cadastro e tente novamente.",
+  registration_start_failed: "A API não conseguiu iniciar o cadastro.",
+  confirmation_request_failed: "A API não conseguiu solicitar a confirmação por e-mail.",
+  password_reset_request_failed: "A API não conseguiu solicitar a recuperação de senha.",
+  confirmation_invalid_or_expired: "O link de confirmação é inválido, expirou ou já foi usado.",
+  registrations_closed: "Novos cadastros estão temporariamente indisponíveis.",
+  password_reset_invalid: "Revise os dados da nova senha.",
+  password_reset_invalid_or_expired: "O link de recuperação é inválido, expirou ou já foi usado.",
+  password_change_failed: "A API não conseguiu alterar a senha.",
+  account_security_failed: "A API não conseguiu proteger os dados da conta.",
+  password_security_failed: "A API não conseguiu proteger a nova senha.",
+  invalid_password: "A senha informada não atende aos requisitos.",
+  password_confirmation_mismatch: "A senha e a confirmação precisam ser iguais.",
+  current_password_invalid: "A senha atual está incorreta.",
+  current_account_password_invalid: "A senha da conta está incorreta.",
+  account_identity_invalid: "A senha atual ou o e-mail informado está incorreto.",
+  family_name_mismatch: "O nome digitado não corresponde ao nome da família.",
+  email_unavailable: "Este e-mail não está disponível.",
+  email_change_failed: "A API não conseguiu alterar o e-mail.",
+  email_delivery_unavailable: "O serviço de envio de e-mail está temporariamente indisponível.",
+  account_delete_failed: "A API não conseguiu excluir a conta.",
+  device_limit_reached: "Esta família atingiu o limite de computadores.",
+  invalid_device: "Revise os dados do computador e tente novamente.",
+  device_not_found: "O computador não foi encontrado.",
+  device_resource_not_found: "O computador ou o item solicitado não foi encontrado.",
+  devices_load_failed: "A API não conseguiu carregar os computadores.",
+  device_load_failed: "A API não conseguiu carregar o computador.",
+  device_authorization_failed: "A API não conseguiu confirmar o acesso ao computador.",
+  device_password_update_failed: "A API não conseguiu atualizar a senha local.",
+  invalid_bonus: "O tempo extra deve estar entre 1 minuto e 12 horas.",
+  invalid_limit: "O limite informado não é válido.",
+  invalid_cursor: "A posição solicitada no histórico não é válida.",
+  audit_events_load_failed: "A API não conseguiu carregar o histórico.",
+  communication_settings_load_failed: "A API não conseguiu carregar as configurações de diagnóstico.",
+  routine_conflict: "Este horário está ocupado por outra rotina.",
+  streaming_unavailable: "As atualizações em tempo real estão indisponíveis.",
+  method_not_allowed: "A API não aceita esta operação neste endereço.",
+  not_found: "O endereço solicitado não foi encontrado na API.",
+  invalid_request: "A API não conseguiu validar os dados enviados.",
+  request_forbidden: "A API recusou esta operação.",
+  request_conflict: "A operação conflita com o estado atual dos dados.",
+  service_unavailable: "A API está temporariamente indisponível.",
+  internal_error: "A API encontrou um erro interno ao processar a operação.",
+};
+
+export class APIError extends Error {
+  readonly code: string;
+  readonly correlationID: string;
+  readonly status: number;
+
+  constructor(message: string, code: string, correlationID: string, status: number) {
+    super(message);
+    this.name = "APIError";
+    this.code = code;
+    this.correlationID = correlationID;
+    this.status = status;
+  }
+}
+
+function payloadText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function withDiagnostics(message: string, code: string, correlationID: string): string {
+  const details = [code ? `Código: ${code}` : "", correlationID ? `Referência: ${correlationID}` : ""].filter(Boolean);
+  return details.length ? `${message.replace(/[.\s]+$/, "")}. ${details.join(" · ")}.` : message;
+}
+
+function responseError(response: Response, isJSON: boolean, payload: APIErrorPayload): APIError {
+  const serverMessage = payloadText(payload.error);
+  const responseCode = payloadText(payload.code) || response.headers.get("X-Compasso-Error-Code")?.trim() || "";
+  const correlationID = payloadText(payload.correlation_id) || response.headers.get("X-Compasso-Correlation-ID")?.trim() || "";
+  if (response.status === 405 && !isJSON) {
+    const code = "api_endpoint_misconfigured";
+    return new APIError(withDiagnostics(
+      "A interface está apontando para o servidor de arquivos, não para a API. Revise runtime-config.js.",
+      code,
+      correlationID,
+    ), code, correlationID, response.status);
+  }
+  if (!isJSON) {
+    const code = responseCode || (response.status === 403
+      ? "api_access_forbidden"
+      : response.status === 404
+        ? "api_endpoint_not_found"
+        : response.status >= 500
+          ? "api_gateway_error"
+          : "api_http_error");
+    const message = response.status === 403
+      ? "O acesso à API foi recusado antes que o aplicativo pudesse responder."
+      : response.status === 404
+        ? "O endereço configurado para a API não foi encontrado."
+        : response.status >= 500
+          ? "A infraestrutura não conseguiu obter uma resposta válida da API."
+          : `A API respondeu com o estado HTTP ${response.status}.`;
+    return new APIError(withDiagnostics(message, code, correlationID), code, correlationID, response.status);
+  }
+  const code = responseCode || `http_${response.status}`;
+  const message = code === "routine_conflict" && serverMessage
+    ? serverMessage
+    : API_ERROR_MESSAGES[code] ?? "A API não conseguiu concluir a operação.";
+  return new APIError(withDiagnostics(message, code, correlationID), code, correlationID, response.status);
+}
+
 function normalizedDays(value: unknown): Routine["days"] {
   const days = Array.isArray(value) ? value : [];
   return Array.from({ length: 7 }, (_, index) => Boolean(days[index])) as Routine["days"];
@@ -41,36 +158,43 @@ class API {
     headers.set("Accept", "application/json");
     if (init.body) headers.set("Content-Type", "application/json");
     if (mutate && this.csrf) headers.set("X-CSRF-Token", this.csrf);
-    const response = await fetch(`${this.base}${path}`, { ...init, headers, credentials: "include", cache: "no-store" });
+    let response: Response;
+    try {
+      response = await fetch(`${this.base}${path}`, { ...init, headers, credentials: "include", cache: "no-store" });
+    } catch {
+      const code = "api_unreachable";
+      throw new APIError(withDiagnostics(
+        "Não foi possível conectar à API. Verifique a conexão e o endereço configurado.",
+        code,
+        "",
+      ), code, "", 0);
+    }
     if (response.status === 204) return undefined as T;
     const isJSON = response.headers.get("Content-Type")?.includes("application/json") ?? false;
-    const payload = isJSON ? await response.json().catch(() => ({})) : {};
+    const payload = (isJSON ? await response.json().catch(() => ({})) : {}) as APIErrorPayload;
     if (!response.ok) {
-      const wrongServer = response.status === 405 && !isJSON;
-      throw new Error(wrongServer
-        ? "A interface está apontando para o servidor de arquivos, não para a API. Revise runtime-config.js."
-        : payload.error ?? "Não foi possível concluir a operação.");
+      throw responseError(response, isJSON, payload);
     }
     return payload as T;
   }
 
   async session() { const value = await this.request<Session>("/api/v1/admin/session"); this.csrf = value.csrf_token; return value; }
   async login(login: string, password: string) {
-    if (!this.csrf) await this.session();
+    await this.session();
     const value = await this.request<Session>("/api/v1/admin/session", { method: "POST", body: JSON.stringify({ login, password, csrf_token: this.csrf }) });
     this.csrf = value.csrf_token; return value;
   }
   async logout() { await this.request<void>("/api/v1/admin/session", { method: "DELETE" }, true); }
   async register(familyName: string, email: string, password: string, confirmation: string) {
-    if (!this.csrf) await this.session();
+    await this.session();
     return this.request<{ message: string }>("/api/v1/account/register", { method: "POST", body: JSON.stringify({ family_name: familyName, email, password, password_confirmation: confirmation, csrf_token: this.csrf }) });
   }
   async resendConfirmation(email: string) {
-    if (!this.csrf) await this.session();
+    await this.session();
     return this.request<{ message: string }>("/api/v1/account/resend-confirmation", { method: "POST", body: JSON.stringify({ email, csrf_token: this.csrf }) });
   }
   async requestPasswordReset(email: string) {
-    if (!this.csrf) await this.session();
+    await this.session();
     return this.request<{ message: string }>("/api/v1/account/password-reset", { method: "POST", body: JSON.stringify({ email, csrf_token: this.csrf }) });
   }
   confirmRegistration(token: string) { return this.request<{ message: string }>("/api/v1/account/confirm", { method: "POST", body: JSON.stringify({ token }) }); }
