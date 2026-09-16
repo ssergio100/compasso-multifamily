@@ -1,5 +1,5 @@
 import { Activity, CalendarDays, Plus, RefreshCw, Settings, SlidersHorizontal, SquareTerminal } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, remoteMode } from "./api";
 import { Brand, Toast } from "./components";
 import { CommunicationPage } from "./communication/CommunicationPage";
@@ -18,6 +18,7 @@ import { RoutinesPage } from "./features/routines/RoutinesPage";
 import { withoutId } from "./features/routines/routineSchedule";
 import { useDeviceStream } from "./hooks/useDeviceStream";
 import { useNotifications } from "./hooks/useNotifications";
+import { useSwipeNavigation } from "./hooks/useSwipeNavigation";
 import { mockDevices } from "./mock";
 import { initialDevice, initialView, isAppNavigationState, writeNavigationState, type AppModal, type AppNavigationState } from "./navigation";
 import type { Device, Routine, View } from "./types";
@@ -97,6 +98,11 @@ export function App() {
     }
     navigate({ modal: null, editingRoutineId: null }, true);
   };
+
+  const viewIndex = Math.max(0, nav.findIndex((item) => item.id === view));
+  const canSwipeTo = useCallback((delta: -1 | 1) => { const next = viewIndex + delta; return next >= 0 && next < nav.length; }, [viewIndex]);
+  const swipeTo = useCallback((delta: -1 | 1) => { const next = nav[viewIndex + delta]; if (next) navigate({ view: next.id, modal: null, editingRoutineId: null }); }, [viewIndex, navigate]);
+  const swipe = useSwipeNavigation(canSwipeTo, swipeTo);
 
   useEffect(() => {
     const restoreNavigation = (event: PopStateEvent) => {
@@ -185,10 +191,10 @@ export function App() {
     <a className="skip" href="#workspace">Pular para o conteúdo</a>
     <DeviceRail devices={devices} selected={selected} onSelect={(deviceId) => navigate({ selectedId: deviceId, view: "now", modal: null, editingRoutineId: null })} onAdd={() => openModal("device")} onAccount={() => openModal("account")} onLogout={() => void logout()} />
     <aside className="main-nav"><div className="nav-title">Ações</div><nav>{nav.map(({ id, label, Icon }) => <button className={view === id ? "active" : ""} key={id} onClick={() => navigate({ view: id, modal: null, editingRoutineId: null })}><Icon size={20} />{label}</button>)}</nav></aside>
-    <main id="workspace">
+    <main id="workspace" onPointerCancel={swipe.onPointerCancel} onPointerDown={swipe.onPointerDown} onPointerMove={swipe.onPointerMove} onPointerUp={swipe.onPointerUp} style={swipe.mainStyle}>
       <MobileDeviceHeader devices={devices} selected={selected} onSelect={(deviceId) => navigate({ selectedId: deviceId, modal: null, editingRoutineId: null })} onAccount={() => openModal("account")} onLogout={() => void logout()} />
       <header className="workspace-header"><div><DeviceAvatar avatarKey={avatarKeyFor(selected)} className="workspace-avatar" name={selected.name} /><span><h1>{selected.name}</h1><DeviceState device={selected} /></span></div><button onClick={() => void load()}><RefreshCw size={17} />{lastSeen(selected.last_seen_at)}</button></header>
-      <div className={`workspace-body ${view === "communication" ? "communication-workspace" : ""}`}>
+      <div className={`workspace-body ${view === "communication" ? "communication-workspace" : ""}`} style={swipe.bodyStyle}>
         {view === "now" && <NowPage device={selected} onBonus={() => openModal("bonus")} onPause={() => void command(selected.monitoring_paused ? "resume_monitoring" : "pause_monitoring", (device) => ({ ...device, monitoring_paused: !device.monitoring_paused, manual_block: false, actual_state: remoteMode ? device.actual_state : "unblocked", control_status: device.monitoring_paused ? remoteMode ? "resume_requested" : "active" : remoteMode ? "pause_requested" : "paused" }), selected.monitoring_paused ? "Retomada solicitada." : "Pausa solicitada.")} onBlock={() => { const blockedForAction = deviceIsBlockedForAction(selected); void command(blockedForAction ? "clear_manual_block" : "block_now", (device) => ({ ...device, monitoring_paused: false, manual_block: !blockedForAction, actual_state: blockedForAction ? remoteMode ? device.actual_state : "unblocked" : remoteMode ? device.actual_state : "blocked", control_status: blockedForAction ? remoteMode ? "unblock_requested" : "active" : remoteMode ? "block_requested" : "blocked" }), blockedForAction ? "Desbloqueio solicitado." : "Bloqueio solicitado."); }} />}
         {view === "limits" && <LimitsPage device={selected} onSave={async (weekly) => { if (remoteMode) await api.policy(selected.id, weekly, selected.warning_minutes); patchDevice((device) => ({ ...device, weekly_quota_seconds: weekly })); notify("Limites salvos."); if (remoteMode) await load(); }} />}
         {view === "routines" && <RoutinesPage device={selected} onNew={() => openModal("routine")} onEdit={(routine) => openModal("routine", routine)} onToggle={async (routine) => { const next = { ...routine, enabled: !routine.enabled }; if (remoteMode) await api.routine(selected.id, withoutId(next), routine.id); patchDevice((device) => ({ ...device, routines: device.routines.map((item) => item.id === routine.id ? next : item) })); notify(next.enabled ? "Rotina ativada." : "Rotina pausada."); }} onDelete={async (routine) => { if (remoteMode) await api.deleteRoutine(selected.id, routine.id); patchDevice((device) => ({ ...device, routines: device.routines.filter((item) => item.id !== routine.id) })); notify("Rotina removida."); }} />}
