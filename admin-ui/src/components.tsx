@@ -98,7 +98,7 @@ export function TimeRangePicker({ start, end, onChange }: { start: string; end: 
   const minutes = timeMinutes(draft);
   const angle = minutes / 1440 * 360;
   const radians = (angle - 90) * Math.PI / 180;
-  const knobStyle: CSSProperties = { left: `calc(50% + ${Math.cos(radians) * 41}%)`, top: `calc(50% + ${Math.sin(radians) * 41}%)` };
+  const knobStyle: CSSProperties = { left: `calc(50% + ${Math.cos(radians) * 43.7}%)`, top: `calc(50% + ${Math.sin(radians) * 43.7}%)` };
   const ringStyle: CSSProperties = { background: `conic-gradient(from 0deg, var(--ink) 0deg ${angle}deg, var(--line) ${angle}deg 360deg)` };
   const adjustWithKeyboard = (event: KeyboardEvent<HTMLDivElement>) => { if (!["ArrowLeft", "ArrowDown", "ArrowRight", "ArrowUp", "Home", "End"].includes(event.key)) return; event.preventDefault(); if (event.key === "Home") setDraft("00:00"); else if (event.key === "End") setDraft(minutesTime(lastTimeMinutes)); else setDraft(minutesTime(minutes + (["ArrowRight", "ArrowUp"].includes(event.key) ? timeStepMinutes : -timeStepMinutes))); };
   const finish = () => { onChange(draftStart, draftEnd); setOpen(false); };

@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Modal } from "../../components";
 import { formatDuration } from "../common/format";
 
-const MIN_BONUS = 10;
+const MIN_BONUS = 5;
 const MAX_BONUS = 180;
 const BONUS_STEP = 5;
 
