@@ -135,3 +135,19 @@ main#workspace{min-width:0}.workspace-header{height:130px;border-bottom:1px soli
   .login-terminal .login-result>.primary-button,.login-terminal .agent-download{width:100%}
   .login-terminal .agent-download-details{justify-content:center;flex-wrap:wrap}
 }
+
+/* Tempo restante — roda consumida (celular) */
+.time-balance{display:none}
+
+@media(max-width:960px){
+  .time-hero .time-hero-number,.time-hero>span{display:none}
+  .time-balance{display:grid;justify-items:center;gap:6px;margin-top:30px}
+  .balance-note{font-size:.8rem;font-weight:650;letter-spacing:.01em}
+  .state-blocked .balance-note{color:var(--danger)}
+  .state-paused .balance-note,.state-pending .balance-note{color:var(--warning)}
+  .state-offline .balance-note{color:var(--muted)}
+  .time-balance .balance-ring{width:min(240px,72vw);height:min(240px,72vw);margin:6px auto 0}
+  .time-balance .balance-ring::before{inset:27px}
+  .time-balance .balance-ring>div span{font-size:.62rem}
+  .time-balance .balance-ring>div strong{font-size:clamp(1.6rem,9vw,2.2rem)}
+}
