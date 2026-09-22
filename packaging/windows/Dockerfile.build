@@ -1,0 +1,19 @@
+FROM golang:1.26-bookworm@sha256:6c5605ab3a9a9fb3c4eafe5b3d63cdbf3881caf113262b67862547b54a9db599 AS builder
+
+WORKDIR /source
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY agent ./agent
+COPY protocol ./protocol
+
+RUN mkdir -p /out \
+    && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+       -o /out/compasso-windows-service.exe ./agent/cmd/compasso-windows-service \
+    && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -H=windowsgui" \
+       -o /out/compasso-windows-companion.exe ./agent/cmd/compasso-windows-companion
+
+FROM scratch AS exported-binaries
+
+COPY --from=builder /out/ /

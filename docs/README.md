@@ -7,6 +7,7 @@ transitórias são preservados localmente, fora do pacote compartilhado.
 
 - [Demonstração e capturas de tela](demo.md)
 - [Instalação do cliente Linux](client-installation.md)
+- [Instalação do agente Windows](windows-agent-installation.md)
 - [Instalação da API do servidor](server-installation.md)
 - [Atualização manual do servidor](atualizacao-manual-servidor.md)
 

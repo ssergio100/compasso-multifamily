@@ -24,6 +24,7 @@ import (
 	"github.com/ssergio100/compasso/agent/storage"
 	"github.com/ssergio100/compasso/agent/syncclient"
 	"github.com/ssergio100/compasso/agent/syncstatus"
+	protocol "github.com/ssergio100/compasso/protocol/v1"
 )
 
 const (
@@ -114,6 +115,7 @@ func run(configPath string, logger *log.Logger) error {
 		DeviceToken: settings.DeviceToken, InstallationID: enrollment.InstallationID,
 		HeartbeatInterval: syncclient.DefaultHeartbeatInterval,
 		AttemptTimeout:    settings.HTTPTimeout,
+		Capabilities:      []string{protocol.SessionLockCapability},
 	})
 	if err != nil {
 		return err

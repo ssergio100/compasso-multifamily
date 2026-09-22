@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	protocol "github.com/ssergio100/compasso/protocol/v1"
@@ -212,6 +214,10 @@ func (s *Store) receiveHeartbeat(
 	if len(request.Events) > 100 || len(request.CommandAcks) > 100 {
 		return protocol.HeartbeatResponse{}, errors.New("heartbeat batch exceeds 100 items")
 	}
+	capabilities, err := canonicalCapabilities(request.Capabilities)
+	if err != nil {
+		return protocol.HeartbeatResponse{}, err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -251,10 +257,10 @@ func (s *Store) receiveHeartbeat(
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE device SET last_seen_at=?, online_until=COALESCE(?, online_until),
 			applied_policy_revision=?, applied_control_revision=?, graphical_session_active=?,
-			graphical_session_locked=?, graphical_session_id=?, updated_at=? WHERE id=?`,
+			graphical_session_locked=?, graphical_session_id=?, agent_capabilities=?, updated_at=? WHERE id=?`,
 		stamp, nullableTime(onlineUntil), request.PolicyRevision, request.ControlRevision,
 		boolInt(request.GraphicalSessionActive), boolInt(request.GraphicalSessionLocked),
-		nullableSessionID(request.GraphicalSessionActive, request.GraphicalSessionID), stamp, deviceID); err != nil {
+		nullableSessionID(request.GraphicalSessionActive, request.GraphicalSessionID), capabilities, stamp, deviceID); err != nil {
 		return protocol.HeartbeatResponse{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -370,6 +376,31 @@ func (s *Store) receiveHeartbeat(
 		return protocol.HeartbeatResponse{}, err
 	}
 	return response, nil
+}
+
+func canonicalCapabilities(values []string) (string, error) {
+	if len(values) > 16 {
+		return "", errors.New("heartbeat has too many capabilities")
+	}
+	seen := make(map[string]bool, len(values))
+	canonical := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || len(value) > 64 {
+			return "", errors.New("heartbeat contains invalid capability")
+		}
+		for _, character := range value {
+			if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-' {
+				continue
+			}
+			return "", errors.New("heartbeat contains invalid capability")
+		}
+		if !seen[value] {
+			canonical = append(canonical, value)
+			seen[value] = true
+		}
+	}
+	sort.Strings(canonical)
+	return strings.Join(canonical, ","), nil
 }
 
 func receiveEvent(ctx context.Context, tx *sql.Tx, deviceID string, event protocol.PendingEvent, observedAt time.Time) error {

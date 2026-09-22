@@ -912,6 +912,61 @@ func TestLiveStatusNamesReverseControlTransitions(t *testing.T) {
 	}
 }
 
+func TestWindowsUnlockStatusWaitsForHumanAuthentication(t *testing.T) {
+	fixture := newWebFixture(t, false, time.Hour)
+	defer fixture.store.Close()
+	ctx := context.Background()
+	device, err := fixture.store.CreateDevice(ctx, "Windows", fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var quotas [7]int64
+	quotas[fixture.now.Weekday()] = 3600
+	if err := fixture.store.SaveQuotas(ctx, device.ID, quotas, 10, fixture.now); err != nil {
+		t.Fatal(err)
+	}
+	capabilities := []string{
+		protocol.SessionLockCapability,
+		protocol.UnlockAuthenticationCapability,
+		protocol.LockPausesAccountingCapability,
+	}
+	if _, err := fixture.store.ReceiveHeartbeat(ctx, device.ID, protocol.HeartbeatRequest{
+		Capabilities: capabilities, PolicyRevision: 2, LocalDate: "2026-08-10",
+		GraphicalSessionActive: true, GraphicalSessionID: "windows-session",
+	}, fixture.now); err != nil {
+		t.Fatal(err)
+	}
+	blockID, err := fixture.store.QueueControlOperation(ctx, device.ID, "block_now", fixture.now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, _ := fixture.store.LoadControl(ctx, device.ID)
+	if _, err := fixture.store.ReceiveHeartbeat(ctx, device.ID, protocol.HeartbeatRequest{
+		Capabilities: capabilities, PolicyRevision: 2, ControlRevision: control.Revision,
+		LocalDate: "2026-08-10", GraphicalSessionActive: true,
+		GraphicalSessionLocked: true, GraphicalSessionID: "windows-session", CommandAcks: []string{blockID},
+	}, fixture.now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	clearID, err := fixture.store.QueueControlOperation(ctx, device.ID, "clear_manual_block", fixture.now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, _ = fixture.store.LoadControl(ctx, device.ID)
+	if _, err := fixture.store.ReceiveHeartbeat(ctx, device.ID, protocol.HeartbeatRequest{
+		Capabilities: capabilities, PolicyRevision: 2, ControlRevision: control.Revision,
+		LocalDate: "2026-08-10", GraphicalSessionActive: true,
+		GraphicalSessionLocked: true, GraphicalSessionID: "windows-session", CommandAcks: []string{clearID},
+	}, fixture.now.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, _, status, err := fixture.app.loadDeviceLiveStatus(ctx, device.ID)
+	if err != nil || status.ControlStatus != "authentication_required" || status.Counting ||
+		!status.SessionLockSupported || !status.UnlockAuthenticationRequired || status.ActualState != "blocked" {
+		t.Fatalf("Windows release status=%+v err=%v", status, err)
+	}
+}
+
 func TestHeartbeatRequiresDeviceCredential(t *testing.T) {
 	fixture := newWebFixture(t, false, time.Hour)
 	defer fixture.store.Close()

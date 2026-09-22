@@ -5,13 +5,14 @@ import "context"
 
 // Session is the subset of logind session metadata needed by the daemon.
 type Session struct {
-	ID              string
-	AuthorizationID string
-	User            string
-	Type            string
-	Class           string
-	State           string
-	Remote          bool
+	ID                         string
+	AuthorizationID            string
+	User                       string
+	Type                       string
+	Class                      string
+	State                      string
+	Remote                     bool
+	PauseAccountingWhileLocked bool
 }
 
 // BalanceAuthorizationID distinguishes a logind session across agent runtime
@@ -26,7 +27,7 @@ func (s Session) BalanceAuthorizationID() string {
 
 // IsLocalGraphical reports whether usage in this session counts for phase 3.
 func (s Session) IsLocalGraphical() bool {
-	graphical := s.Type == "x11" || s.Type == "wayland"
+	graphical := s.Type == "x11" || s.Type == "wayland" || s.Type == "windows-console"
 	userSession := s.Class == "user" || s.Class == "user-early"
 	alive := s.State != "closing"
 	return graphical && userSession && alive && !s.Remote

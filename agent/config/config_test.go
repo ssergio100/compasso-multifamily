@@ -41,6 +41,20 @@ func TestLoadRequiresControlledUser(t *testing.T) {
 	}
 }
 
+func TestLoadWithPlatformDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(`controlled_user = "S-1-5-21-1002"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadWithDefaults(path, Defaults{DatabasePath: `C:\ProgramData\Compasso\Agent\agent.db`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DatabasePath != `C:\ProgramData\Compasso\Agent\agent.db` || got.LoginctlPath != "" {
+		t.Fatalf("platform defaults not applied: %+v", got)
+	}
+}
+
 func TestLoadRejectsUnknownAndDuplicateKeys(t *testing.T) {
 	for name, extra := range map[string]string{
 		"unknown":   `log_level = "debug"`,

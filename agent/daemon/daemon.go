@@ -42,21 +42,29 @@ type Daemon struct {
 	controlledUser  string
 	checkpointEvery time.Duration
 
-	tracker               *storage.UsageTracker
-	trackerDate           string
-	lastAt                time.Time
-	lastShouldCount       bool
-	lastHadActiveSession  bool
-	lastCountUntil        time.Time
-	fraction              time.Duration
-	lockAttempts          map[string]time.Time
-	synchronizationSource SynchronizationSource
-	alertNotifier         alert.Notifier
-	alertTracker          alert.Tracker
+	tracker                 *storage.UsageTracker
+	trackerDate             string
+	lastAt                  time.Time
+	lastShouldCount         bool
+	lastHadCountableSession bool
+	lastCountUntil          time.Time
+	fraction                time.Duration
+	lockAttempts            map[string]time.Time
+	synchronizationSource   SynchronizationSource
+	alertNotifier           alert.Notifier
+	accessReleaseNotifier   alert.Notifier
+	alertTracker            alert.Tracker
+	hasDecision             bool
+	lastDecisionAllowed     bool
+	notifiedReleaseCommand  string
 }
 
 func (d *Daemon) SetAlertNotifier(notifier alert.Notifier) {
 	d.alertNotifier = notifier
+}
+
+func (d *Daemon) SetAccessReleaseNotifier(notifier alert.Notifier) {
+	d.accessReleaseNotifier = notifier
 }
 
 // SetSynchronizationSource enables server-confirmed balance authorization and
@@ -131,12 +139,16 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 		}
 	}
 	activeGraphicalSessionLocked := false
+	pauseAccountingWhileLocked := false
 	for _, current := range graphical {
 		if current.State == "active" {
 			activeGraphicalSessionLocked = lockedSessions[current.BalanceAuthorizationID()]
+			pauseAccountingWhileLocked = current.PauseAccountingWhileLocked
 			break
 		}
 	}
+	countableGraphicalSession := activeGraphicalSession &&
+		!(activeGraphicalSessionLocked && pauseAccountingWhileLocked)
 	if d.synchronizationSource != nil {
 		d.synchronizationSource.SetGraphicalSession(activeGraphicalSession, activeGraphicalSessionID, activeGraphicalSessionLocked)
 	}
@@ -169,7 +181,7 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 		}
 	} else if d.trackerDate != localDate {
 		midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-		if d.lastShouldCount && d.lastHadActiveSession {
+		if d.lastShouldCount && d.lastHadCountableSession {
 			beforeMidnight := cappedElapsed(d.lastAt, midnight, d.lastCountUntil)
 			if err := d.addElapsed(ctx, beforeMidnight, midnight); err != nil {
 				return Status{}, fmt.Errorf("account usage before local midnight: %w", err)
@@ -182,13 +194,13 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 		if err != nil {
 			return Status{}, err
 		}
-		if newDayDecision.ShouldCount && activeGraphicalSession {
+		if newDayDecision.ShouldCount && countableGraphicalSession {
 			afterMidnight := cappedElapsed(midnight, now, newDayDecision.NextBlockAt)
 			if err := d.addElapsed(ctx, afterMidnight, now); err != nil {
 				return Status{}, fmt.Errorf("account usage after local midnight: %w", err)
 			}
 		}
-	} else if !d.lastAt.IsZero() && d.lastShouldCount && d.lastHadActiveSession {
+	} else if !d.lastAt.IsZero() && d.lastShouldCount && d.lastHadCountableSession {
 		elapsed := cappedElapsed(d.lastAt, now, d.lastCountUntil)
 		if err := d.addElapsed(ctx, elapsed, now); err != nil {
 			return Status{}, fmt.Errorf("account allowed usage: %w", err)
@@ -237,15 +249,17 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 	// failure must not cause the same elapsed interval to be counted twice.
 	d.lastAt = now
 	d.lastShouldCount = decision.ShouldCount
-	d.lastHadActiveSession = activeGraphicalSession
+	d.lastHadCountableSession = countableGraphicalSession
 	d.lastCountUntil = decision.NextBlockAt
 	if awaitingSynchronization {
 		return status, nil
 	}
+	wasReleased := d.hasDecision && !d.lastDecisionAllowed && decision.Allowed
+	releaseRequested := controlEffectCurrent &&
+		(pendingControl.Kind == "clear_manual_block" || pendingControl.Kind == "pause_monitoring")
 
 	if decision.Allowed {
-		unlockRequested := controlEffectCurrent &&
-			(pendingControl.Kind == "clear_manual_block" || pendingControl.Kind == "pause_monitoring")
+		unlockRequested := releaseRequested
 		if unlockRequested {
 			for _, current := range graphical {
 				if current.State != "active" || !lockedSessions[current.BalanceAuthorizationID()] {
@@ -273,6 +287,18 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 			if err := d.sessions.Lock(ctx, current); err != nil {
 				return status, err
 			}
+		}
+	}
+	d.hasDecision = true
+	d.lastDecisionAllowed = decision.Allowed
+	shouldNotifyRelease := wasReleased ||
+		(releaseRequested && pendingControl.CommandID != d.notifiedReleaseCommand)
+	if decision.Allowed && activeGraphicalSessionLocked && shouldNotifyRelease && d.accessReleaseNotifier != nil {
+		if err := d.accessReleaseNotifier.Notify(ctx, alert.AccessReleased()); err != nil {
+			return status, fmt.Errorf("notify access release: %w", err)
+		}
+		if releaseRequested {
+			d.notifiedReleaseCommand = pendingControl.CommandID
 		}
 	}
 	return status, nil

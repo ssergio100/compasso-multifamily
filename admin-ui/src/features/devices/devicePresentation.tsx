@@ -4,7 +4,7 @@ import { defaultAvatarKey } from "../../visuals";
 
 export function deviceVisualState(device: Device) {
   if (!device.online) return "offline";
-  if (["block_requested", "unblock_requested", "pause_requested", "resume_requested"].includes(device.control_status)) return "pending";
+  if (["block_requested", "unblock_requested", "authentication_required", "pause_requested", "resume_requested"].includes(device.control_status)) return "pending";
   if (device.control_status === "paused") return "paused";
   if (device.actual_state === "blocked" || device.control_status === "blocked") return "blocked";
   return "online";
@@ -24,6 +24,7 @@ export function DeviceState({ device }: { device: Device }) {
   const Icon = state === "blocked" ? LockKeyhole : state === "paused" ? Pause : state === "pending" ? RefreshCw : state === "online" ? MonitorCheck : ShieldOff;
   const onlineDetail = device.control_status === "block_requested" ? "Bloqueando…"
     : device.control_status === "unblock_requested" ? "Desbloqueando…"
+	  : device.control_status === "authentication_required" ? "Aguardando autenticação no Windows"
       : device.control_status === "pause_requested" ? "Pausando…"
         : device.control_status === "resume_requested" ? "Retomando…"
           : state === "blocked" ? "Bloqueado"

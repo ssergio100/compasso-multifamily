@@ -7,18 +7,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ssergio100/compasso/agent/alert"
 	"github.com/ssergio100/compasso/agent/policy"
 	"github.com/ssergio100/compasso/agent/session"
 	"github.com/ssergio100/compasso/agent/storage"
 )
 
 type fakeSessions struct {
-	sessions       []session.Session
-	lockRequests   []string
-	unlockRequests []string
-	locked         map[string]bool
-	lockErr        error
-	unlockErr      error
+	sessions           []session.Session
+	lockRequests       []string
+	unlockRequests     []string
+	locked             map[string]bool
+	lockErr            error
+	unlockErr          error
+	unlockLeavesLocked bool
 }
 
 type fakeSynchronizationSource struct {
@@ -28,6 +30,13 @@ type fakeSynchronizationSource struct {
 	paused                 bool
 	blocked                bool
 	revision               int64
+}
+
+type fakeNotifier struct{ alerts []alert.Alert }
+
+func (f *fakeNotifier) Notify(_ context.Context, notification alert.Alert) error {
+	f.alerts = append(f.alerts, notification)
+	return nil
 }
 
 func (f *fakeSynchronizationSource) RemoteControl() (bool, bool, bool, int64) {
@@ -99,6 +108,8 @@ func TestRemoteBlockAndClearCompleteOnlyAfterGraphicalEffect(t *testing.T) {
 	synchronization := &fakeSynchronizationSource{online: true, blocked: true, revision: 2}
 	policyDaemon, _ := New(store, sessions, "child", time.Second)
 	policyDaemon.SetSynchronizationSource(synchronization)
+	releaseNotifier := &fakeNotifier{}
+	policyDaemon.SetAccessReleaseNotifier(releaseNotifier)
 	if err := store.StageControlEffect(ctx, "block-2", 2, "block_now", start); err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +130,7 @@ func TestRemoteBlockAndClearCompleteOnlyAfterGraphicalEffect(t *testing.T) {
 	}
 
 	synchronization.blocked, synchronization.revision = false, 3
+	sessions.unlockLeavesLocked = true
 	if err := store.StageControlEffect(ctx, "clear-3", 3, "clear_manual_block", start.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -128,10 +140,23 @@ func TestRemoteBlockAndClearCompleteOnlyAfterGraphicalEffect(t *testing.T) {
 	if len(sessions.unlockRequests) != 1 || sessions.unlockRequests[0] != "3" {
 		t.Fatalf("unlock requests=%v", sessions.unlockRequests)
 	}
+	if len(releaseNotifier.alerts) != 1 || releaseNotifier.alerts[0].Kind != alert.AlertAccessReleased {
+		t.Fatalf("release notifications=%+v", releaseNotifier.alerts)
+	}
+	if _, err := policyDaemon.Step(ctx, start.Add(2500*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if len(releaseNotifier.alerts) != 1 {
+		t.Fatalf("pending authentication repeated notification=%+v", releaseNotifier.alerts)
+	}
+	sessions.unlockLeavesLocked = false
 	if ids, _ := store.AppliedCommandIDs(ctx, 10); len(ids) != 1 {
 		t.Fatalf("clear acknowledged before observation: %v", ids)
 	}
 	if _, err := policyDaemon.Step(ctx, start.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policyDaemon.Step(ctx, start.Add(4*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if ids, _ := store.AppliedCommandIDs(ctx, 10); len(ids) != 2 {
@@ -194,7 +219,9 @@ func (f *fakeSessions) Unlock(_ context.Context, current session.Session) error 
 	if f.locked == nil {
 		f.locked = make(map[string]bool)
 	}
-	f.locked[current.ID] = false
+	if !f.unlockLeavesLocked {
+		f.locked[current.ID] = false
+	}
 	return nil
 }
 
@@ -378,6 +405,40 @@ func TestLockedSessionConsumesAlertWithoutDeliveringItAfterUnlock(t *testing.T) 
 	unlocked, err := policyDaemon.Step(ctx, start.Add(time.Minute+time.Second))
 	if err != nil || len(unlocked.DueAlerts) != 0 {
 		t.Fatalf("unlock replayed alerts=%+v err=%v", unlocked.DueAlerts, err)
+	}
+}
+
+func TestWindowsLockedSessionPausesUsageAccounting(t *testing.T) {
+	ctx := context.Background()
+	store := testStore(t)
+	defer store.Close()
+	start := time.Date(2026, time.August, 10, 14, 0, 0, 0, time.Local)
+	if err := store.ReplacePolicy(ctx, testPolicy(1, start.Weekday(), time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	sessions := &fakeSessions{sessions: []session.Session{{
+		ID: "1", User: "S-1-5-21-1002", Type: "windows-console", Class: "user", State: "active",
+		PauseAccountingWhileLocked: true,
+	}}}
+	policyDaemon, err := New(store, sessions, "S-1-5-21-1002", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policyDaemon.Step(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	unlocked, err := policyDaemon.Step(ctx, start.Add(10*time.Second))
+	if err != nil || unlocked.UsageSeconds != 10 {
+		t.Fatalf("unlocked usage=%d err=%v", unlocked.UsageSeconds, err)
+	}
+	sessions.locked = map[string]bool{"1": true}
+	observedLocked, err := policyDaemon.Step(ctx, start.Add(11*time.Second))
+	if err != nil || observedLocked.UsageSeconds != 11 {
+		t.Fatalf("usage at lock observation=%d err=%v", observedLocked.UsageSeconds, err)
+	}
+	stillLocked, err := policyDaemon.Step(ctx, start.Add(31*time.Second))
+	if err != nil || stillLocked.UsageSeconds != 11 {
+		t.Fatalf("locked usage advanced=%d err=%v", stillLocked.UsageSeconds, err)
 	}
 }
 

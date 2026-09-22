@@ -72,6 +72,13 @@ func TestRunReportsSuccessfulSynchronization(t *testing.T) {
 		if r.Header.Get(protocol.CapabilitiesHeader) != protocol.NextHeartbeatCapability+", "+protocol.CommandAckReceiptCapability+", "+protocol.InstallationIdentityCapability {
 			t.Errorf("protocol capabilities header=%q", r.Header.Get(protocol.CapabilitiesHeader))
 		}
+		var heartbeat protocol.HeartbeatRequest
+		if err := json.NewDecoder(r.Body).Decode(&heartbeat); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(heartbeat.Capabilities, ", ") != r.Header.Get(protocol.CapabilitiesHeader) {
+			t.Errorf("heartbeat capabilities=%v header=%q", heartbeat.Capabilities, r.Header.Get(protocol.CapabilitiesHeader))
+		}
 		if r.Header.Get(protocol.InstallationIDHeader) != testInstallationID {
 			t.Errorf("installation ID header=%q", r.Header.Get(protocol.InstallationIDHeader))
 		}

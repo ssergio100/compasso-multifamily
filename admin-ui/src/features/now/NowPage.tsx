@@ -32,9 +32,10 @@ export function NowPage({ device, onBonus, onPause, onBlock }: { device: Device;
   const hasRoutineSegments = daySegments.some(({ segments }) => segments.length > 0);
   const visualState = deviceVisualState(device);
   const blockedForAction = deviceIsBlockedForAction(device);
-  const blockTransition = device.control_status === "block_requested" || device.control_status === "unblock_requested";
+  const blockTransition = device.control_status === "block_requested" || device.control_status === "unblock_requested" || device.control_status === "authentication_required";
   const blockButtonLabel = device.control_status === "block_requested" ? "Bloqueando…"
     : device.control_status === "unblock_requested" ? "Desbloqueando…"
+	  : device.control_status === "authentication_required" ? "Aguardando login"
       : blockedForAction ? "Desbloquear"
         : "Bloquear";
   const pauseTransition = device.control_status === "pause_requested" || device.control_status === "resume_requested";
@@ -49,6 +50,7 @@ export function NowPage({ device, onBonus, onPause, onBlock }: { device: Device;
           : "Ativo";
   const accessState = device.control_status === "block_requested" ? "Bloqueando…"
     : device.control_status === "unblock_requested" ? "Desbloqueando…"
+	  : device.control_status === "authentication_required" ? "Liberado — autentique no Windows"
       : device.actual_state === "blocked" ? "Bloqueado"
         : !device.graphical_session_active ? "Sem sessão"
           : "Liberado";

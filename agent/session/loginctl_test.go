@@ -79,6 +79,17 @@ func TestBalanceAuthorizationIDFallsBackOnlyForAlternateManagers(t *testing.T) {
 	}
 }
 
+func TestWindowsPhysicalConsoleIsLocalGraphical(t *testing.T) {
+	current := Session{Type: "windows-console", Class: "user", State: "active"}
+	if !current.IsLocalGraphical() {
+		t.Fatal("Windows physical console was not classified as local graphical")
+	}
+	current.Remote = true
+	if current.IsLocalGraphical() {
+		t.Fatal("remote Windows session was classified as local graphical")
+	}
+}
+
 func TestLockUsesLogindWithoutEndingSession(t *testing.T) {
 	manager, err := newLogind("/usr/bin/loginctl", "testnamespace")
 	if err != nil {

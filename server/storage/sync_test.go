@@ -108,6 +108,40 @@ func TestDeviceAuthenticationAndDuplicateHeartbeatAreIdempotent(t *testing.T) {
 	}
 }
 
+func TestHeartbeatPersistsCanonicalAgentCapabilities(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
+	device, err := store.CreateDevice(ctx, "Windows", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.ReceiveHeartbeat(ctx, device.ID, protocol.HeartbeatRequest{
+		LocalDate: "2026-08-10",
+		Capabilities: []string{
+			protocol.UnlockAuthenticationCapability,
+			protocol.SessionLockCapability,
+			protocol.SessionLockCapability,
+		},
+	}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _, err := store.LoadDevice(ctx, device.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.SupportsCapability(protocol.SessionLockCapability) ||
+		!stored.SupportsCapability(protocol.UnlockAuthenticationCapability) || len(stored.AgentCapabilities) != 2 {
+		t.Fatalf("stored capabilities=%v", stored.AgentCapabilities)
+	}
+	invalid := protocol.HeartbeatRequest{LocalDate: "2026-08-10", Capabilities: []string{"INVALID capability"}}
+	if _, err := store.ReceiveHeartbeat(ctx, device.ID, invalid, now.Add(2*time.Second)); err == nil {
+		t.Fatal("invalid capability was accepted")
+	}
+}
+
 func TestInstallationBindingAndCredentialRotationAreAtomic(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)

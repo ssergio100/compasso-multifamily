@@ -161,7 +161,7 @@ func TestCrashWriterHelper(t *testing.T) {
 	if os.Getenv("TEMPO_TEST_CRASH_HELPER") != "1" {
 		return
 	}
-	db, err := sql.Open("sqlite3", os.Getenv("TEMPO_TEST_DB"))
+	db, err := sql.Open(sqliteDriverName, sqliteDataSource(os.Getenv("TEMPO_TEST_DB")))
 	if err != nil {
 		os.Exit(2)
 	}

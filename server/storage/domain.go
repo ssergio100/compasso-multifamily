@@ -44,6 +44,7 @@ type Device struct {
 	GraphicalSessionActive bool
 	GraphicalSessionLocked bool
 	GraphicalSessionID     string
+	AgentCapabilities      []string
 	CreatedAt              time.Time
 	Online                 bool
 }
@@ -449,7 +450,7 @@ func (s *Store) ListDevicesForFamily(ctx context.Context, familyID string) ([]De
 func (s *Store) listDevices(ctx context.Context, familyID string, scoped bool) ([]Device, error) {
 	query := `
 		SELECT id, name, avatar_key, last_seen_at, online_until, policy_revision, applied_policy_revision, applied_control_revision,
-		       graphical_session_active, graphical_session_locked, graphical_session_id, created_at
+		       graphical_session_active, graphical_session_locked, graphical_session_id, agent_capabilities, created_at
 		FROM device`
 	args := []interface{}{}
 	if scoped {
@@ -467,17 +468,19 @@ func (s *Store) listDevices(ctx context.Context, familyID string, scoped bool) (
 		var device Device
 		var lastSeen, onlineUntil sql.NullString
 		var graphicalSessionID sql.NullString
+		var agentCapabilities string
 		var graphicalSessionActive int
 		var graphicalSessionLocked int
 		var created string
 		if err := rows.Scan(&device.ID, &device.Name, &device.AvatarKey, &lastSeen, &onlineUntil, &device.PolicyRevision,
 			&device.AppliedPolicyRevision, &device.AppliedControlRevision, &graphicalSessionActive,
-			&graphicalSessionLocked, &graphicalSessionID, &created); err != nil {
+			&graphicalSessionLocked, &graphicalSessionID, &agentCapabilities, &created); err != nil {
 			return nil, err
 		}
 		device.GraphicalSessionActive = graphicalSessionActive != 0
 		device.GraphicalSessionLocked = graphicalSessionLocked != 0
 		device.GraphicalSessionID = graphicalSessionID.String
+		device.AgentCapabilities = splitCapabilities(agentCapabilities)
 		device.CreatedAt, err = parseTime(created)
 		if err != nil {
 			return nil, err
@@ -519,16 +522,17 @@ func (s *Store) LoadDevice(ctx context.Context, id string) (Device, Policy, erro
 	var device Device
 	var lastSeen, onlineUntil sql.NullString
 	var graphicalSessionID sql.NullString
+	var agentCapabilities string
 	var graphicalSessionActive int
 	var graphicalSessionLocked int
 	var created string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, name, avatar_key, last_seen_at, online_until, policy_revision, applied_policy_revision, applied_control_revision,
-		       graphical_session_active, graphical_session_locked, graphical_session_id, created_at
+		       graphical_session_active, graphical_session_locked, graphical_session_id, agent_capabilities, created_at
 		FROM device WHERE id=?`, id,
 	).Scan(&device.ID, &device.Name, &device.AvatarKey, &lastSeen, &onlineUntil, &device.PolicyRevision,
 		&device.AppliedPolicyRevision, &device.AppliedControlRevision, &graphicalSessionActive,
-		&graphicalSessionLocked, &graphicalSessionID, &created)
+		&graphicalSessionLocked, &graphicalSessionID, &agentCapabilities, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Device{}, Policy{}, ErrNotFound
 	}
@@ -539,6 +543,7 @@ func (s *Store) LoadDevice(ctx context.Context, id string) (Device, Policy, erro
 	device.GraphicalSessionActive = graphicalSessionActive != 0
 	device.GraphicalSessionLocked = graphicalSessionLocked != 0
 	device.GraphicalSessionID = graphicalSessionID.String
+	device.AgentCapabilities = splitCapabilities(agentCapabilities)
 	if lastSeen.Valid {
 		value, parseErr := parseTime(lastSeen.String)
 		if parseErr != nil {
@@ -555,6 +560,22 @@ func (s *Store) LoadDevice(ctx context.Context, id string) (Device, Policy, erro
 	}
 	policy, err := s.loadPolicy(ctx, id)
 	return device, policy, err
+}
+
+func (d Device) SupportsCapability(wanted string) bool {
+	for _, capability := range d.AgentCapabilities {
+		if capability == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func splitCapabilities(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return strings.Split(value, ",")
 }
 
 func (s *Store) RenameDevice(ctx context.Context, id, name string, now time.Time) error {
