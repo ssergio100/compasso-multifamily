@@ -30,24 +30,10 @@ type Config struct {
 	HTTPTimeout       time.Duration
 }
 
-// Defaults supplies platform-owned paths without teaching the shared parser
-// about any operating system. Installation-specific values in the file still
-// take precedence.
-type Defaults struct {
-	DatabasePath string
-	LoginctlPath string
-}
-
 // Load reads the flat TOML subset used by the agent configuration. Keeping the
 // parser deliberately small avoids adding a runtime dependency for five scalar
 // installation settings.
 func Load(path string) (Config, error) {
-	return LoadWithDefaults(path, Defaults{LoginctlPath: "/usr/bin/loginctl"})
-}
-
-// LoadWithDefaults reads configuration with paths selected by the platform
-// entry point. Windows can omit Linux-only loginctl_path entirely.
-func LoadWithDefaults(path string, defaults Defaults) (Config, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("open configuration: %w", err)
@@ -92,19 +78,16 @@ func LoadWithDefaults(path string, defaults Defaults) (Config, error) {
 	}
 
 	config := Config{
-		DatabasePath:       defaults.DatabasePath,
+		DatabasePath:       values["database_path"],
 		ControlledUser:     values["controlled_user"],
 		TickInterval:       time.Second,
 		CheckpointInterval: 5 * time.Second,
-		LoginctlPath:       defaults.LoginctlPath,
+		LoginctlPath:       "/usr/bin/loginctl",
 		ServerURL:          strings.TrimRight(values["server_url"], "/"),
 		DeviceID:           values["device_id"],
 		DeviceToken:        values["device_token"],
 		HeartbeatInterval:  3 * time.Second,
 		HTTPTimeout:        8 * time.Second,
-	}
-	if value := values["database_path"]; value != "" {
-		config.DatabasePath = value
 	}
 	if value := values["tick_interval"]; value != "" {
 		config.TickInterval, err = time.ParseDuration(value)
@@ -145,13 +128,16 @@ func (c Config) Validate() error {
 		return errors.New("database_path cannot be empty")
 	}
 	if c.ControlledUser == "" || strings.ContainsAny(c.ControlledUser, " \t\r\n/") {
-		return errors.New("controlled_user must be a single local account identifier")
+		return errors.New("controlled_user must be a single Linux account name")
 	}
 	if c.TickInterval <= 0 {
 		return errors.New("tick_interval must be positive")
 	}
 	if c.CheckpointInterval <= 0 {
 		return errors.New("checkpoint_interval must be positive")
+	}
+	if c.LoginctlPath == "" {
+		return errors.New("loginctl_path cannot be empty")
 	}
 	configured := 0
 	for _, value := range []string{c.ServerURL, c.DeviceID, c.DeviceToken} {

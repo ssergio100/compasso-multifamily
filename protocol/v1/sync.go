@@ -14,14 +14,10 @@ const (
 	InstallationIdentityCapability = "installation-identity"
 	NextHeartbeatCapability        = "next-heartbeat-seconds"
 	CommandAckReceiptCapability    = "command-ack-receipts"
-	SessionLockCapability          = "session-lock"
-	UnlockAuthenticationCapability = "unlock-requires-authentication"
-	LockPausesAccountingCapability = "lock-pauses-accounting"
 	CurrentProtocolVersion         = "2"
 )
 
 type HeartbeatRequest struct {
-	Capabilities           []string       `json:"capabilities,omitempty"`
 	PolicyRevision         int64          `json:"policy_revision"`
 	ControlRevision        int64          `json:"control_revision,omitempty"`
 	SessionStateRevision   int64          `json:"session_state_revision,omitempty"`

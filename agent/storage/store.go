@@ -6,9 +6,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"sync"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 var (
@@ -38,7 +41,15 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve database path: %w", err)
 	}
-	db, err := sql.Open(sqliteDriverName, sqliteDataSource(absolutePath))
+	dsnURL := url.URL{Scheme: "file", Path: absolutePath}
+	query := dsnURL.Query()
+	query.Set("_busy_timeout", "5000")
+	query.Set("_foreign_keys", "on")
+	query.Set("_journal_mode", "WAL")
+	query.Set("_synchronous", "FULL")
+	dsnURL.RawQuery = query.Encode()
+
+	db, err := sql.Open("sqlite3", dsnURL.String())
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}

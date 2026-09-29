@@ -210,8 +210,6 @@ class API {
       id: detail.device.id, name: detail.device.name, avatar_key: normalizeAvatarKey(detail.device.avatar_key, detail.device.id),
       online: detail.status.online,
       graphical_session_active: detail.status.graphical_session_active,
-	  session_lock_supported: detail.status.session_lock_supported,
-	  unlock_authentication_required: detail.status.unlock_authentication_required,
       monitoring_paused: detail.control.monitoring_paused, manual_block: detail.control.manual_block,
       actual_state: detail.status.actual_state ?? (detail.status.online ? "unblocked" : "offline"),
       control_status: detail.status.control_status ?? (!detail.status.online ? "offline" : detail.control.monitoring_paused ? "paused" : detail.control.manual_block ? "blocked" : "active"),

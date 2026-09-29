@@ -10,11 +10,10 @@ import (
 )
 
 const (
-	AlertPrimary        = "primary"
-	AlertFiveMinute     = "five_minute"
-	AlertOneMinute      = "one_minute"
-	AlertAccessReleased = "access_released"
-	minimumRearm        = 30 * time.Second
+	AlertPrimary    = "primary"
+	AlertFiveMinute = "five_minute"
+	AlertOneMinute  = "one_minute"
+	minimumRearm    = 30 * time.Second
 )
 
 // Alert represents a planned notification event before a known block.
@@ -28,14 +27,6 @@ type Alert struct {
 
 type Notifier interface {
 	Notify(context.Context, Alert) error
-}
-
-func AccessReleased() Alert {
-	return Alert{
-		Kind:  AlertAccessReleased,
-		Title: "Acesso liberado",
-		Body:  "A restrição terminou. Desbloqueie o Windows com sua senha, PIN ou Windows Hello.",
-	}
 }
 
 // Cycle identifies one authorization period for alert deduplication.

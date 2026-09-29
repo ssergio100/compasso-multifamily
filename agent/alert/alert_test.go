@@ -7,14 +7,6 @@ import (
 	"github.com/ssergio100/compasso/agent/policy"
 )
 
-func TestAccessReleasedMessageRequiresHumanAuthentication(t *testing.T) {
-	notification := AccessReleased()
-	if notification.Kind != AlertAccessReleased || notification.Title == "" ||
-		notification.Body != "A restrição terminou. Desbloqueie o Windows com sua senha, PIN ou Windows Hello." {
-		t.Fatalf("notification=%+v", notification)
-	}
-}
-
 func TestTrackerReturnsCrossedRoutineThresholds(t *testing.T) {
 	blockAt := time.Date(2026, 8, 8, 22, 0, 0, 0, time.Local)
 	decision := policy.Decision{

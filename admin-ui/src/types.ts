@@ -2,7 +2,7 @@ export type View = "now" | "limits" | "routines" | "administration" | "communica
 export type AvatarKey = "capybara" | "cat" | "chick" | "dog" | "fox" | "lion" | "owl" | "panda" | "penguin" | "rabbit" | "sheep" | "tiger";
 export type RoutineIconKey = "study" | "reading" | "sleep" | "bath" | "meal" | "school" | "exercise" | "chores" | "family" | "music" | "outdoor" | "general";
 export type ActualState = "offline" | "blocked" | "unblocked";
-export type ControlStatus = "offline" | "pause_requested" | "resume_requested" | "paused" | "block_requested" | "unblock_requested" | "authentication_required" | "blocked" | "active";
+export type ControlStatus = "offline" | "pause_requested" | "resume_requested" | "paused" | "block_requested" | "unblock_requested" | "blocked" | "active";
 
 export type CommunicationParty = "agent" | "api" | "interface";
 export type CommunicationResult = "success" | "warning" | "error";
@@ -71,8 +71,6 @@ export interface Device {
   avatar_key?: AvatarKey;
   online: boolean;
   graphical_session_active: boolean;
-  session_lock_supported?: boolean;
-  unlock_authentication_required?: boolean;
   monitoring_paused: boolean;
   manual_block: boolean;
   actual_state: ActualState;
@@ -98,8 +96,6 @@ export interface LiveStatus {
   counting: boolean;
   online: boolean;
   graphical_session_active: boolean;
-  session_lock_supported: boolean;
-  unlock_authentication_required: boolean;
   actual_state: ActualState;
   control_status: ControlStatus;
 }
@@ -115,5 +111,5 @@ export interface DeviceDetailResponse {
   device: DeviceResponse;
   policy: { revision: number; monitoring_paused: boolean; manual_block: boolean; warning_minutes: number; password_set: boolean; weekly_quota_seconds: number[]; routines: Routine[] };
   control: { revision: number; monitoring_paused: boolean; manual_block: boolean };
-  status: { today_quota_seconds: number; bonus_seconds: number; used_seconds: number; remaining_seconds: number; counting: boolean; online: boolean; graphical_session_active: boolean; session_lock_supported: boolean; unlock_authentication_required: boolean; actual_state: ActualState; control_status: ControlStatus };
+  status: { today_quota_seconds: number; bonus_seconds: number; used_seconds: number; remaining_seconds: number; counting: boolean; online: boolean; graphical_session_active: boolean; actual_state: ActualState; control_status: ControlStatus };
 }

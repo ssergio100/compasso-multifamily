@@ -1,4 +1,4 @@
-.PHONY: all build build-agent build-agent-portable build-agent-windows build-server admin-ui-dev package-client package-deb package-server package-all publish-admin-ui publish-client-release publish-server test-deb test-server-package fmt fmt-check lint test test-go test-ui test-admin-ui test-migrations test-backup-restore test-security test-docs clean
+.PHONY: all build build-agent build-agent-portable build-server admin-ui-dev package-client package-deb package-server package-all publish-admin-ui publish-client-release publish-server test-deb test-server-package fmt fmt-check lint test test-go test-ui test-admin-ui test-migrations test-backup-restore test-security test-docs clean
 
 all: test
 
@@ -12,9 +12,6 @@ build-agent:
 
 build-agent-portable:
 	./scripts/build-portable-client-binaries.sh
-
-build-agent-windows:
-	./scripts/build-windows-binaries.sh
 
 build-server:
 	mkdir -p bin

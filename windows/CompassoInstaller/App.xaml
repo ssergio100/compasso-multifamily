@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Application
+    x:Class="CompassoInstaller.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:CompassoInstaller">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="CompassoBrandBrush" Color="#E8654A" />
+                    <SolidColorBrush x:Key="CompassoBrandForegroundBrush" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="CompassoSuccessBrush" Color="#70897D" />
+                    <SolidColorBrush x:Key="CompassoBrandPanelBrush" Color="#F4F2F0" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="CompassoBrandBrush" Color="#EE765C" />
+                    <SolidColorBrush x:Key="CompassoBrandForegroundBrush" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="CompassoSuccessBrush" Color="#91AD9F" />
+                    <SolidColorBrush x:Key="CompassoBrandPanelBrush" Color="#242124" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="HighContrast">
+                    <SolidColorBrush x:Key="CompassoBrandBrush" Color="{ThemeResource SystemColorHighlightColor}" />
+                    <SolidColorBrush x:Key="CompassoBrandForegroundBrush" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                    <SolidColorBrush x:Key="CompassoSuccessBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="CompassoBrandPanelBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+
+            <Style x:Key="CompassoPrimaryButtonStyle" BasedOn="{StaticResource AccentButtonStyle}" TargetType="Button">
+                <Setter Property="Background" Value="{ThemeResource CompassoBrandBrush}" />
+                <Setter Property="Foreground" Value="{ThemeResource CompassoBrandForegroundBrush}" />
+                <Setter Property="FontSize" Value="17" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="MinHeight" Value="52" />
+                <Setter Property="CornerRadius" Value="8" />
+            </Style>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

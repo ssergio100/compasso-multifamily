@@ -28,7 +28,6 @@ type Config struct {
 	InstallationID    string
 	HeartbeatInterval time.Duration
 	AttemptTimeout    time.Duration
-	Capabilities      []string
 }
 
 const (
@@ -156,25 +155,6 @@ func New(store *storage.Store, httpClient *http.Client, config Config) (*Client,
 		return nil, errors.New("heartbeat fallback must be between 1 second and 10 minutes")
 	}
 	config.ServerURL = strings.TrimRight(config.ServerURL, "/")
-	capabilities := []string{
-		protocol.NextHeartbeatCapability,
-		protocol.CommandAckReceiptCapability,
-		protocol.InstallationIdentityCapability,
-	}
-	seenCapabilities := make(map[string]bool, len(capabilities)+len(config.Capabilities))
-	for _, capability := range capabilities {
-		seenCapabilities[capability] = true
-	}
-	for _, capability := range config.Capabilities {
-		if !validCapability(capability) {
-			return nil, fmt.Errorf("invalid agent capability %q", capability)
-		}
-		if !seenCapabilities[capability] {
-			capabilities = append(capabilities, capability)
-			seenCapabilities[capability] = true
-		}
-	}
-	config.Capabilities = capabilities
 	return &Client{
 		store: store, http: httpClient, config: config, now: time.Now,
 		wait: waitForHeartbeat, jitter: jitteredHeartbeatDelay,
@@ -244,7 +224,6 @@ func (c *Client) Heartbeat(ctx context.Context, now time.Time) (result protocol.
 		return protocol.HeartbeatResponse{}, err
 	}
 	request := protocol.HeartbeatRequest{
-		Capabilities:   configCapabilities(c.config.Capabilities),
 		PolicyRevision: revision, LocalDate: localDate, SecondsUsed: usage.SecondsUsed,
 		GraphicalSessionActive: graphicalSessionActive,
 		GraphicalSessionID:     graphicalSessionID,
@@ -281,7 +260,8 @@ func (c *Client) Heartbeat(ctx context.Context, now time.Time) (result protocol.
 	httpRequest.Header.Set("X-Tempo-Device-ID", c.config.DeviceID)
 	httpRequest.Header.Set(protocol.InstallationIDHeader, c.config.InstallationID)
 	httpRequest.Header.Set(protocol.VersionHeader, protocol.CurrentProtocolVersion)
-	httpRequest.Header.Set(protocol.CapabilitiesHeader, strings.Join(c.config.Capabilities, ", "))
+	httpRequest.Header.Set(protocol.CapabilitiesHeader,
+		protocol.NextHeartbeatCapability+", "+protocol.CommandAckReceiptCapability+", "+protocol.InstallationIdentityCapability)
 	stage = "transport"
 	response, err := c.http.Do(httpRequest)
 	if err != nil {
@@ -353,23 +333,6 @@ func (c *Client) Heartbeat(ctx context.Context, now time.Time) (result protocol.
 		}
 	}
 	return result, nil
-}
-
-func validCapability(value string) bool {
-	if value == "" || len(value) > 64 {
-		return false
-	}
-	for _, character := range value {
-		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-func configCapabilities(values []string) []string {
-	return append([]string(nil), values...)
 }
 
 func decodeHeartbeatError(status int, retryAfterHeader string, responseBody io.Reader) error {

@@ -30,8 +30,6 @@ export function useDeviceStream({ deviceId, enabled, setDevices, pendingOperatio
           ...item,
           online: status.online,
           graphical_session_active: status.graphical_session_active,
-		  session_lock_supported: status.session_lock_supported,
-		  unlock_authentication_required: status.unlock_authentication_required,
           actual_state: status.actual_state,
           control_status: status.control_status,
           counting: status.counting,
