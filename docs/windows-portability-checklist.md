@@ -6,11 +6,36 @@
       diferenças Windows e divisão entre interface e serviço.
 - [x] Criar o executável de serviço Windows e validar instalação, início,
       parada e persistência de um estado mínimo em `%ProgramData%\Compasso`.
-- [ ] Substituir `loginctl` por detecção/bloqueio de sessão Windows e validar
+- [x] Substituir `loginctl` por detecção/bloqueio de sessão Windows e validar
       conta local, sessão remota ignorada, sessão bloqueada sem consumo e
       retomada da contagem somente após desbloqueio manual.
-- [ ] Reutilizar SQLite, política e sincronização; validar um heartbeat, uma
+      - Detecção por SID e classificação de bloqueio validadas
+      - `WTSDisconnectSession` da Session 0 retorna sucesso e desconecta a sessão
+        console sem encerrar aplicativos; o adaptador `session.Windows` reporta a
+        sessão como bloqueada, que é a condição que impede a contagem de tempo.
+        Evidência: execução direta do método `session.Windows.Lock` a partir da
+        Session 0, com observação do estado por `Sessions`.
+      - `LockWorkStation()` da Session 0 retorna `ERROR_ACCESS_DENIED`, portanto
+        é impróprio para o serviço. O código original é correto.
+      - Ressalva: rejeição de sessão RDP apenas por teste unitário.
+- [x] Reutilizar SQLite, política e sincronização; validar um heartbeat, uma
       política aplicada, um comando confirmado e recuperação após ficar offline.
+      - Fiação do serviço validada: config DPAPI → store → `BindEnrollment` →
+        `session.NewWindows` → `daemon.New` → `syncclient` → `localauth`.
+        Intervalos espelham o Linux (tick 1s, checkpoint 5s, HTTP 8s,
+        heartbeat 3s). `Notifier` no-op explícito; o daemon tolera `nil`.
+      - Token gravado por `configure` com DPAPI e ACL, lido de stdin para não
+        aparecer na linha de comando. Segredo não recuperável pela interface.
+      - **Heartbeat validado** em `https://apifamily.smresume.com`: o agente
+        reportou `synchronization online`, confirmando TLS, cabeçalhos,
+        identidade de instalação e aceitação do dispositivo pelo servidor.
+      - **Política recebida e aplicada**: revisão 7 aplicada pelo servidor e
+        confirmada pelo agente, com `weekly_quota` por dia da semana e
+        `warning_minutes=10`.
+      - **Item 4 concluído.** Cenários validados pelo usuário na máquina real:
+        bloquear ao esgotar o tempo; retomar ao adicionar tempo; bloqueio
+        manual; desbloqueio manual com senha na sessão; pausa da monitoração;
+        pausa sem contagem de tempo.
 - [ ] Expor IPC local protegido e conectar **Adicionar tempo**; validar status,
       senha correta/incorreta, rate limit e evento durável.
 - [ ] Conectar **Configurações** ao caminho privilegiado; validar conta, URL,

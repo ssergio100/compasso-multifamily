@@ -121,7 +121,7 @@ func LoadConfiguration(path string) (Configuration, error) {
 		ServerURL: record.ServerURL, DeviceID: record.DeviceID, DeviceToken: string(token),
 		ControlledUserSID: record.ControlledUserSID,
 	}
-	clear(token)
+	zeroBytes(token)
 	if err := configuration.Validate(); err != nil {
 		return Configuration{}, err
 	}
@@ -157,6 +157,12 @@ func cryptData(value []byte, protect bool) ([]byte, error) {
 	}
 	defer windows.LocalFree(windows.Handle(uintptr(unsafe.Pointer(output.Data))))
 	return append([]byte(nil), unsafe.Slice(output.Data, int(output.Size))...), nil
+}
+
+func zeroBytes(value []byte) {
+	for i := range value {
+		value[i] = 0
+	}
 }
 
 func restrictDirectory(path string) error {

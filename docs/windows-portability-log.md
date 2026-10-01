@@ -3,7 +3,17 @@
 Este é o ponto único de retomada do trabalho. Registre aqui apenas fatos
 verificados, decisões vigentes e o próximo passo concreto.
 
-## Estado atual — 2026-09-30
+## Estado atual — 2026-10-01
+
+- **Heartbeat real validado.** O serviço Windows agora executa a fiação completa
+  do agente e o servidor respondeu bem. Detalhes e próximos passos ao final
+  desta seção.
+- A interface **vigente** é `windows/CompassoWails`; `CompassoApp` e
+  `CompassoInstaller` são históricos. Ao retomar, ler
+  `docs/windows-agent-contract.md` e o checklist antes de tocar em qualquer
+  interface.
+
+## Estado anterior — 2026-09-30
 
 - O escopo vigente agora é concluir a portabilidade funcional do agente Linux
   para Windows, preservando o instalador e as interfaces já aprovadas.
@@ -50,9 +60,10 @@ verificados, decisões vigentes e o próximo passo concreto.
   `STOPPED_STATE=PASS`, `RESTART=PASS` e `UNINSTALL=PASS`. O verificador removeu
   o serviço de teste ao final; a instalação vigente não foi tocada.
 - O segundo item do checklist está concluído.
-- Funcionalidade agora em desenvolvimento: adaptador de sessão Windows por SID,
-  com sessão remota ignorada, bloqueio preservando aplicativos e contagem
-  obrigatoriamente parada enquanto a sessão estiver bloqueada.
+- Funcionalidade agora em desenvolvimento: reutilizar o motor independente de
+  plataforma (SQLite, política, sincronização) dentro do serviço Windows, para o
+  quarto item. O adaptador de sessão foi concluído e validado (ver correções de
+  2026-09-30 mais adiante nesta seção).
 - Adaptador WTS implementado em `agent/session/windows.go`. A classificação
   aceita somente protocolo de console local, compara a conta pelo SID, lê o
   estado de bloqueio e trata estado desconhecido como bloqueado. Sessões RDP são
@@ -68,13 +79,113 @@ verificados, decisões vigentes e o próximo passo concreto.
   `02A0282C98903DFA08AB2C1DA3CD92D3C2A7060579A288D9CB7CA7DDB23CD7AC`.
 - Pendência para concluir o terceiro item: executar o bloqueio real quando o
   usuário puder desbloquear manualmente e confirmar a transição de estado.
-- Bloqueio da próxima etapa: `go-sqlite3` exige CGO, mas não há GCC na máquina.
-  Foi solicitada a instalação de MSYS2 e `mingw-w64-ucrt-x86_64-gcc`; isso é
-  dependência apenas de build, não será incluída no produto.
+- **Correção 2026-09-30 — o bloqueio de CGO descrito acima não existe.** O
+  MSYS2 e o `mingw-w64-ucrt-x86_64-gcc` já estavam instalados em
+  `C:\msys64\ucrt64\bin\gcc.exe` (gcc 16.2.0). O que não existia era o `gcc` no
+  `PATH`; `windows/build-agent-service.ps1` já referenciava o caminho absoluto
+  e por isso nunca precisou de instalação nova. Nenhum produto foi instalado
+  nesta etapa.
+- CGO e SQLite comprovados no Windows: com `CGO_ENABLED=1` e `CC` apontando
+  para o gcc do MSYS2, `agent/storage`, `agent/policy`, `agent/syncclient`,
+  `agent/localauth`, `agent/syncstatus` e `protocol/v1` compilam, e os testes
+  desses pacotes passam na máquina Windows, incluindo `agent/storage`, que
+  executa SQLite de verdade (`ok ... 1.048s`). **O quarto item não tem mais
+  bloqueio de build.**
+- Defeito corrigido: `agent/windowsservice/config_windows.go` usava `clear()`,
+  que exige Go 1.21, mas o `go.mod` do módulo declara `go 1.18`. A build do
+  serviço falhava com `clear requires go1.21 or later`. O `go.mod` **não** foi
+  alterado, para não impor Go novo ao agente Linux por causa de um arquivo
+  Windows-only; `clear(token)` foi trocado por `zeroBytes`, um helper local de
+  três linhas no mesmo arquivo. `clear()` aparecia uma única vez no repositório.
+- Defeito corrigido: `agent/session/loginctl_test.go` não tinha restrição de
+  plataforma, ao contrário de `loginctl.go`, que tem `//go:build !windows`. No
+  Windows o pacote `session` não compilava para teste, por referenciar
+  `newLogind`, `parseProperties` e `readSessionNamespace`, que só existem no
+  caminho Linux. A mesma restrição foi adicionada ao teste.
+- Após as duas correções: `gofmt` limpo, testes Linux de `agent/...` e
+  `protocol/...` passando, e testes Windows de `storage`, `session`, `policy`,
+  `syncclient`, `localauth`, `windowsservice` e `protocol/v1` com `EXIT=0`.
+- Build do serviço refeita no Windows: `CompassoAgent.exe` com 4.974.592 bytes e
+  SHA-256
+  `9A19B389F08584DD7F0CC698E024475C2D030B2E367E39A261A903E9B12F2184`.
+- Ressalva sobre a build acima: `agent/cmd/compasso-agent-windows` **não importa
+  nenhum pacote do repositório**. Ela valida o esqueleto do SCM, e não o motor.
+  Uma build verde desse alvo não prova nada sobre CGO; a prova está nos testes
+  de `agent/storage` citados acima.
+- **Primitiva de bloqueio corrigida.** `agent/session/windows.go` usava
+  `WTSDisconnectSession` para "travar" a sessão. Essa API é de sessões RDP e, na
+  sessão console, desconecta em vez de bloquear. Foi trocada por
+  `user32!LockWorkStation`, que trava a tela sem encerrar aplicativos nem
+  desconectar a sessão — o comportamento exigido pelo contrato. `Unlock`
+  continua sendo no-op: o Windows exige destrave manual do usuário autorizado.
+- **Terceiro item validado na máquina real.** `windows/verify-session-lock.ps1`
+  compila um harness (`windows/verify-session-lock/`) que usa o adaptador de
+  sessão de verdade, agenda-o na sessão gráfica interativa e observa o ciclo
+  completo. Saída reproduzível em 30/09/2026:
+
+  ```text
+  BEFORE=id=1 user=windows11\Sergio remote=false locked=false
+  LOCK_CALLED=LockWorkStation returned success
+  LOCK_OBSERVED=id=1 locked=true after lock
+  CHARGE_GUARD_OK=session stayed locked for 10s, no charge permitted
+  WAITING_UNLOCK=...
+  UNLOCK_OBSERVED=id=1 locked=false after manual unlock
+  RESULT=PASS
+  ```
+
+  Isso cobre conta local pelo SID, bloqueio real preservando a sessão, janela
+  sem consumo enquanto bloqueada e retomada somente após destrave manual.
+- Ressalva do terceiro item: a rejeição de sessão remota está coberta por teste
+  unitário (`TestClassifyWindowsSession/rdp_ignored`) e pela classificação de
+  protocolo, mas não foi exercitada com uma sessão RDP real.
+- **Revertido em 2026-09-30 — `Lock()` volta a `WTSDisconnectSession`.** Durante
+  esta sessão, `Lock` foi trocado por `user32!LockWorkStation` com base em
+  suposição, sem medição. A medição seguinte derrubou a própria troca:
+  `LockWorkStation()` chamada da Session 0 retorna `False` com `LAST_ERROR=5`
+  (`ERROR_ACCESS_DENIED`) e a sessão console continua `Ativo`. `LockWorkStation`
+  só funciona de dentro da sessão gráfica do usuário, que é exatamente onde o
+  serviço **não** roda. O código original com `WTSDisconnectSession` está
+  correto e é o que fica. A troca foi desfeita com `git checkout`, e
+  `agent/session/windows.go` está idêntico ao estado anterior.
+- Lição registrada: `WTSDisconnectSession` é a API que a Session 0 consegue
+  controlar, e foi a escolha certa desde o início. `LockWorkStation` é
+  semanticamente mais fiel ao `Win+L`, mas exige um processo na sessão do
+  usuário, o que exigiria um componente adicional. Não trocar código funcional
+  sem antes medir a restrição real.
+- **Bloqueio validado a partir da Session 0 com o caminho real do produto.**
+  Executando `session.Windows.Lock` — o mesmo código do serviço — de um processo
+  na Session 0, na conta `windows11\Sergio`, SID
+  `S-1-5-21-278194532-2139705530-887251162-1002`, sessão `1`:
+
+  ```text
+  MATCHED_BEFORE: 1
+    id=1 user=windows11\Sergio remote=false locked=false
+  LOCK_RETURNED_NIL after 317ms
+    t+02s id=1 locked=true
+    ... locked=true até t+16s
+  ```
+
+  E `query user` passou a reportar a sessão `1` como `Disco` (desconectada).
+  Ou seja: `WTSDisconnectSession` **funciona da Session 0**, desliga a sessão
+  sem encerrar aplicativos, e o próprio adaptador passa a reportá-la como
+  bloqueada — que é a condição que impede a contagem de tempo.
+- Comparação que fecha a questão: `LockWorkStation()` chamada da Session 0
+  retorna `False` com `LAST_ERROR=5` (`ERROR_ACCESS_DENIED`) e não trava nada.
+  `WTSDisconnectSession` da Session 0 retorna sucesso e trava. Para um serviço
+  Windows, a escolha é `WTSDisconnectSession`, e o código original está correto.
+- Corpo do terceiro item validado. Ressalva que permanece: a rejeição de sessão
+  remota real (RDP) está coberta por teste unitário e pela classificação de
+  protocolo, não por uma sessão RDP exercitada.
+- O harness `windows/verify-session-lock/` e o script que o agendava foram
+  removidos. Ele foi escrito para o contexto da sessão gráfica, que não é o
+  contexto do serviço, e por isso não serve como evidência do bloqueio. A
+  evidência do serviço é a execução direta do `session.Windows.Lock` da Session
+  0 registrada acima. O terceiro item não depende de nenhum harness.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\build-agent-service.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\verify-agent-service.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\verify-session-lock.ps1
 ```
 
 ## Entrega visual concluída — 2026-09-30
@@ -1410,3 +1521,157 @@ Validação na instalação real:
   da instalação atualizada. As capturas específicas de foco também ficaram em
   `docs/design/windows-shell/validation/`;
 - o aplicativo instalado permaneceu aberto ao final da validação.
+
+## Correções e validações — 2026-10-01
+
+### Heartbeat real validado (item 4 do checklist, parcial)
+
+- Build Windows não é possível neste Linux: não há cross-compiler com CGO e o
+  `gccgo` disponível não suporta o backend Windows de `x/sys`. O build oficial
+  continua sendo `windows/build-agent-service.ps1` na VM.
+- `agent/cmd/compasso-agent-windows/main_windows.go` deixou de ser um esqueleto
+  e passou a executar o mesmo encadeamento de `agent/cmd/tempo-agent/main.go`:
+  configuração → storage → `BindEnrollment` → `session.NewWindows` →
+  `daemon.New` → `syncclient` → `localauth` → daemon.
+- Intervalos espelham o Linux: tick 1s, checkpoint 5s, HTTP 8s,
+  heartbeat 3s (`syncclient.DefaultHeartbeatInterval`).
+- `SetAlertNotifier` recebe um `Notifier` no-op explícito. O motor já tolera
+  `nil` (`agent/daemon/daemon.go:319`); o no-op existe para manter a forma igual
+  à do Linux enquanto as notificações nativas ficam pendentes.
+- Novo comando `configure <server-url> <device-id> <SID>` grava a configuração
+  pelo `windowsservice.SaveConfiguration` existente, que já aplica DPAPI e ACL.
+  O token é lido de **stdin** para não aparecer na linha de comando nem no
+  histórico do shell.
+- Divergências deliberadas em relação ao Linux, todas por Windows: TOML vira
+  JSON com DPAPI, `os/user` vira SID, `syscall.Umask` vira ACL, e não existe
+  marcador de setup — a presença da configuração equivale a setup concluído,
+  então `BindEnrollment` recebe `true`.
+- `svc.Handler.Execute` agora executa o agente em goroutine e trata o erro: se o
+  agente falhar ao subir, o serviço sai com erro em vez de declarar `running`.
+  O `runConsole` passou a rodar o agente de verdade, o que permite validar sem
+  instalar o serviço.
+
+Validação na VM (`windows11\Sergio`, SID
+`S-1-5-21-278194532-2139705530-887251162-1002`, confirmado como a única conta
+real do computador):
+
+- `CompassoAgent.exe` compilado: 22.165.938 bytes, SHA-256
+  `11B1D261850DD29B4B8B24E1C9E4C4F6D9F994A02EEDCC51B726EFDF7F55E508`.
+- Configuração gravada em `C:\ProgramData\Compasso\agent-config.json` com
+  `has_device_token: true`, token protegido por DPAPI e diretório com ACL.
+- Execução em modo console por 25 s contra `https://apifamily.smresume.com`:
+  ```
+  starting controlled_user_sid=S-1-5-21-…-1002 database=C:\ProgramData\Compasso\agent.db
+  synchronization enabled server=https://apifamily.smresume.com device_id=0e2b55e7-…-c79224
+  agent cycle failed: no local policy
+  synchronization online
+  agent cycle recovered
+  decision=awaiting_synchronization session=true usage_seconds=0 remaining_seconds=0
+  ```
+- `synchronization online` prova a cadeia completa ponta a ponta: leitura de
+  config com DPAPI, abertura do store, `BindEnrollment`, TLS até o servidor,
+  cabeçalhos, identidade de instalação e aceitação das credenciais do
+  dispositivo.
+- `no local policy` seguido de `agent cycle recovered` é o comportamento
+  correto do primeiro ciclo, antes de existir política. Não é falha.
+- O endpoint responde `invalid_device_credentials` a sondagens sem token, o que
+  confirma que a autorização é exigida de fato.
+
+### Pendências do item 4
+
+- Aplicar uma política pelo painel e observar o serviço Windows consumindo e
+  reportando.
+- Confirmar um comando recebido do servidor.
+- Forçar perda de conexão e observar a recuperação.
+
+### Decisões de arquitetura sobre notificações
+
+- Regra acordada: preservar o **comportamento** do Linux; diferenças internas
+  são permitidas quando justificadas pelo sistema operacional e quando reduzem
+  código especial.
+- O Linux **não tem** agente residente na sessão do usuário. `agent/alert/desktop.go`
+  faz o serviço root executar, sob demanda,
+  `systemd-run --user --machine=<usuário>@.host --collect --quiet notify-send`,
+  ou seja, um processo curto dentro da sessão gráfica, que termina em seguida.
+- Para o Windows, foi descartado o espelho literal. `CreateProcessAsUser` cria o
+  processo na sessão alvo, porém herda a área de trabalho do pai, que na
+  Session 0 é `Service-0x0-…$\Default` e não `WinSta0\Default`. O helper então
+  roda fora da sessão gráfica e o toast **falha em silêncio, sem erro**.
+  Corrigir exige `STARTUPINFO.lpDesktop = "WinSta0\Default"`.
+- Alternativa escolhida: **agente Windows residente na sessão do usuário**,
+  concentrado as operações que dependem do desktop — notificações,
+  `LockWorkStation`, interface de Adicionar tempo e comunicação com o
+  configurador. O serviço segue responsável por regras, tempo, política e
+  decisões privilegiadas.
+  ```
+  Serviço Compasso -> IPC -> Agente da sessão -> operação no desktop
+  ```
+- Consequências aceitas e que precisam ser implementadas: ciclo de vida próprio
+  do agente (subir com a sessão, reiniciar se morrer); degradação sem ele sem
+  quebrar contagem nem política; o serviço trata entrada do agente como não
+  confiável, com conjunto mínimo de comandos validados; e o agente não pode
+  encerrar ao fechar a janela da interface (modo bandeja).
+- O IPC é fronteira de privilégio: serviço LocalSystem e agente de integridade
+  média. Atenção ao precedente já pago — o instalador registrou que servidor
+  elevado com cliente não elevado falha sob `CurrentUserOnly`; aqui o caso é
+  justamente esse, então o padrão do instalador não pode ser reutilizado às
+  cegas.
+- Toast para app *unpackaged* exige AUMID registrado por atalho no menu Iniciar.
+  Deve ser reaproveitado o AUMID do Compasso, que o instalador já registra, em
+  vez de criar um novo.
+- **Não reabrir a decisão do bloqueio:** `WTSDisconnectSession` foi validado a
+  partir da Session 0 e o código original de `agent/session/windows.go` está
+  correto. A existência do agente não obriga trocar por `LockWorkStation`.
+
+### Próximo passo concreto
+
+Aplicar uma política de tempo pelo painel para o dispositivo Windows
+`0e2b55e7-4104-4f56-9d4f-7cb702c79224` e observar, no log do serviço, o consumo
+sendo reportado ao servidor.
+
+### Item 4 concluído — cenários validados pelo usuário (2026-10-01)
+
+O serviço foi instalado de verdade na VM (`CompassoAgent`, início automático
+atrasado, `Running`, estado `running` em `service-state.json`), então toda a
+validação abaixo ocorreu pelo caminho de produto: Session 0, LocalSystem.
+
+- Política publicada pelo painel e recebida pelo agente: revisão 7, com
+  `weekly_quota` por dia da semana e `warning_minutes=10`.
+- Cenários confirmados interativamente pelo usuário na máquina real:
+  - bloqueio ao esgotar o tempo;
+  - retomada ao adicionar mais tempo;
+  - bloqueio manual;
+  - desbloqueio manual com senha na sessão do usuário;
+  - pausa da monitoração;
+  - pausa sem contagem de tempo.
+- `LockWorkStation()` permaneceu fora do caminho do serviço, como decidido:
+  o bloqueio efetivo é `WTSDisconnectSession`, e o destravamento é sempre
+  manual. Não houve tentativa de desbloqueio remoto em nenhum cenário.
+
+### Ferramenta de diagnóstico adicionada
+
+- Novo comando `compasso-agent inspect-state`, somente leitura via API do
+  `agent/storage`, que informa política vigente, uso diário, bônus, estado de
+  sessão confirmado, eventos pendentes e comandos aplicados. Existe porque o
+  SCM descarta a saída do serviço, então o `agent.db` é a única fonte estável
+  de verdade durante a validação.
+- Ferramentas de teste fora do repositório: `watch.ps1` e `watch2.ps1` na VM,
+  usados só para observação. Nada disso foi versionado.
+
+### Dívidas conhecidas, não tratadas
+
+- Notificações nativas do Windows: agreed a arquitetura (agente residente na
+  sessão), nada implementado. O ponto de extensão é o `Notifier` no-op em
+  `agent/cmd/compasso-agent-windows/main_windows.go`.
+- `go test ./agent/...` no Windows continua falhando em três pacotes
+  Linux-específicos: `agent/cmd/tempo-agent` (`undefined: session.NewLogind`),
+  `agent/setup` (diretório de sincronização sem acesso) e `agent/syncstatus`
+  (permissões 0666). São pré-existentes, mas vão poluir validações futuras.
+- Build Windows continua dependente da VM: não há cross-compiler com CGO neste
+  Linux e o `gccgo` disponível não suporta o backend Windows de `x/sys`.
+
+### Próximo passo
+
+Item 5: IPC local protegido e conexão da tela **Adicionar tempo**. O serviço já
+está com política, sessão e bloqueio funcionando, então falta expor a operação
+privilegiada de bônus com senha, incluindo rate limit e evento durável.
