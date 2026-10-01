@@ -371,13 +371,49 @@ func TestLockedSessionConsumesAlertWithoutDeliveringItAfterUnlock(t *testing.T) 
 		t.Fatal(err)
 	}
 	locked, err := policyDaemon.Step(ctx, start.Add(time.Minute))
-	if err != nil || len(locked.DueAlerts) != 0 || locked.UsageSeconds != 60 {
+	if err != nil || len(locked.DueAlerts) != 0 || locked.UsageSeconds != 0 {
 		t.Fatalf("locked session alerts=%+v err=%v", locked.DueAlerts, err)
 	}
 	sessions.locked["3"] = false
 	unlocked, err := policyDaemon.Step(ctx, start.Add(time.Minute+time.Second))
 	if err != nil || len(unlocked.DueAlerts) != 0 {
 		t.Fatalf("unlock replayed alerts=%+v err=%v", unlocked.DueAlerts, err)
+	}
+}
+
+func TestLockedSessionNeverConsumesTime(t *testing.T) {
+	ctx := context.Background()
+	store := testStore(t)
+	defer store.Close()
+	start := time.Date(2026, time.September, 30, 20, 0, 0, 0, time.Local)
+	if err := store.ReplacePolicy(ctx, testPolicy(1, start.Weekday(), time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	sessions := graphicalFake()
+	policyDaemon, err := New(store, sessions, "child", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policyDaemon.Step(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	sessions.locked = map[string]bool{"3": true}
+	locked, err := policyDaemon.Step(ctx, start.Add(10*time.Second))
+	if err != nil || locked.UsageSeconds != 0 {
+		t.Fatalf("lock transition consumed time: status=%+v err=%v", locked, err)
+	}
+	locked, err = policyDaemon.Step(ctx, start.Add(40*time.Second))
+	if err != nil || locked.UsageSeconds != 0 {
+		t.Fatalf("locked interval consumed time: status=%+v err=%v", locked, err)
+	}
+	sessions.locked["3"] = false
+	unlocked, err := policyDaemon.Step(ctx, start.Add(41*time.Second))
+	if err != nil || unlocked.UsageSeconds != 0 {
+		t.Fatalf("unlock transition consumed locked time: status=%+v err=%v", unlocked, err)
+	}
+	unlocked, err = policyDaemon.Step(ctx, start.Add(43*time.Second))
+	if err != nil || unlocked.UsageSeconds != 2 {
+		t.Fatalf("unlocked session did not resume normally: status=%+v err=%v", unlocked, err)
 	}
 }
 

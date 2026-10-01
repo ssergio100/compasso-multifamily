@@ -1,43 +1,34 @@
-using System.ComponentModel;
-using System.Diagnostics;
-using System.IO.Pipes;
 using System.Security.Principal;
 
 namespace CompassoInstaller;
 
-internal enum ElevationVerificationStatus
-{
-    Confirmed,
-    Cancelled,
-    Failed,
-}
-
-internal sealed record ElevationVerificationResult(
-    ElevationVerificationStatus Status,
-    string Message);
-
+/// <summary>
+/// Utilitários de elevação compartilhados entre a interface e o trabalhador.
+/// A responsabilidade de elevar e de aplicar o plano saiu daqui para
+/// <see cref="InstallEngine"/> e <see cref="InstallPlanExecutor"/>.
+/// </summary>
 internal static class ElevationVerifier
 {
-    private const string ProbeArgument = "--elevated-probe";
-    private const string PipePrefix = "compasso-installer-";
-    private const int UacCancelledErrorCode = 1223;
-
+    /// <summary>
+    /// Reconhece a invocação de trabalhador elevado. O nome do argumento foi
+    /// mantido do item 4 para não invalidar a validação já feita: o que mudou é
+    /// o que o processo faz depois de conectar, não como ele é chamado.
+    /// </summary>
     internal static bool TryGetProbePipeName(string[] arguments, out string pipeName)
     {
         pipeName = string.Empty;
-        if (arguments.Length != 3 || arguments[1] != ProbeArgument)
+        if (arguments.Length != 3 || arguments[1] != InstallProtocol.WorkerArgument)
         {
             return false;
         }
 
         var candidate = arguments[2];
-        if (!candidate.StartsWith(PipePrefix, StringComparison.Ordinal))
+        if (!candidate.StartsWith(InstallProtocol.PipePrefix, StringComparison.Ordinal))
         {
             return false;
         }
 
-        var token = candidate[PipePrefix.Length..];
-        if (!Guid.TryParseExact(token, "N", out _))
+        if (!Guid.TryParseExact(candidate[InstallProtocol.PipePrefix.Length..], "N", out _))
         {
             return false;
         }
@@ -46,139 +37,9 @@ internal static class ElevationVerifier
         return true;
     }
 
-    internal static async Task<int> RunProbeAsync(string pipeName)
-    {
-        try
-        {
-            using var client = new NamedPipeClientStream(
-                ".",
-                pipeName,
-                PipeDirection.Out,
-                PipeOptions.Asynchronous);
-            await client.ConnectAsync(15_000);
-
-            await using var writer = new StreamWriter(client)
-            {
-                AutoFlush = true,
-            };
-
-            var isElevated = IsProcessElevated();
-            await writer.WriteLineAsync(isElevated ? "elevated" : "not-elevated");
-            return isElevated ? 0 : 1;
-        }
-        catch (Exception exception)
-        {
-#if DEBUG
-            var path = System.IO.Path.Combine(AppContext.BaseDirectory, "startup.log");
-            File.AppendAllText(path, $"{DateTimeOffset.Now:O} Elevation probe failed: {exception}{Environment.NewLine}");
-#endif
-            return 2;
-        }
-    }
-
-    internal static async Task<ElevationVerificationResult> RequestAsync()
-    {
-        if (IsProcessElevated())
-        {
-            return new ElevationVerificationResult(
-                ElevationVerificationStatus.Confirmed,
-                "A permissão de administrador já está ativa para este instalador.");
-        }
-
-        var pipeName = $"{PipePrefix}{Guid.NewGuid():N}";
-        using var server = new NamedPipeServerStream(
-            pipeName,
-            PipeDirection.In,
-            1,
-            PipeTransmissionMode.Byte,
-            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-
-        Process? elevatedProcess;
-        try
-        {
-            var executablePath = Environment.ProcessPath
-                ?? throw new InvalidOperationException("Não foi possível localizar o executável do instalador.");
-
-            elevatedProcess = Process.Start(new ProcessStartInfo
-            {
-                FileName = executablePath,
-                Arguments = $"{ProbeArgument} {pipeName}",
-                UseShellExecute = true,
-                Verb = "runas",
-                WorkingDirectory = AppContext.BaseDirectory,
-            });
-        }
-        catch (Win32Exception exception) when (exception.NativeErrorCode == UacCancelledErrorCode)
-        {
-            return new ElevationVerificationResult(
-                ElevationVerificationStatus.Cancelled,
-                "A permissão foi cancelada. Nada foi alterado no computador.");
-        }
-        catch (Exception exception)
-        {
-            return new ElevationVerificationResult(
-                ElevationVerificationStatus.Failed,
-                $"Não foi possível solicitar a permissão de administrador: {exception.Message}");
-        }
-
-        if (elevatedProcess is null)
-        {
-            return new ElevationVerificationResult(
-                ElevationVerificationStatus.Failed,
-                "O Windows não iniciou a verificação administrativa.");
-        }
-
-        using (elevatedProcess)
-        using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
-        {
-            try
-            {
-                var connectionTask = server.WaitForConnectionAsync(timeout.Token);
-                var exitTask = elevatedProcess.WaitForExitAsync(timeout.Token);
-                var completedTask = await Task.WhenAny(connectionTask, exitTask);
-
-                if (completedTask == exitTask && !server.IsConnected)
-                {
-                    return new ElevationVerificationResult(
-                        ElevationVerificationStatus.Failed,
-                        "A verificação administrativa terminou antes de responder.");
-                }
-
-                await connectionTask;
-                using var reader = new StreamReader(server);
-                var response = await reader.ReadLineAsync(timeout.Token);
-                await exitTask;
-
-                if (response == "elevated" && elevatedProcess.ExitCode == 0)
-                {
-                    return new ElevationVerificationResult(
-                        ElevationVerificationStatus.Confirmed,
-                        "Permissão confirmada. O instalador está pronto para receber os componentes nas próximas etapas.");
-                }
-
-                return new ElevationVerificationResult(
-                    ElevationVerificationStatus.Failed,
-                    "O processo iniciado não recebeu permissão de administrador.");
-            }
-            catch (OperationCanceledException)
-            {
-                return new ElevationVerificationResult(
-                    ElevationVerificationStatus.Failed,
-                    "A verificação administrativa não respondeu dentro do tempo esperado.");
-            }
-            catch (Exception exception)
-            {
-                return new ElevationVerificationResult(
-                    ElevationVerificationStatus.Failed,
-                    $"Falha durante a verificação administrativa: {exception.Message}");
-            }
-        }
-    }
-
-    private static bool IsProcessElevated()
+    internal static bool IsProcessElevated()
     {
         using var identity = WindowsIdentity.GetCurrent();
-        var principal = new WindowsPrincipal(identity);
-        return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
     }
 }

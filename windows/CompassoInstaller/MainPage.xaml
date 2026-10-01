@@ -128,6 +128,7 @@
                     Spacing="20">
                     <StackPanel Spacing="10">
                         <TextBlock
+                            x:Name="PageTitle"
                             FontSize="46"
                             FontWeight="SemiBold"
                             Text="Instalar o Compasso"
@@ -188,6 +189,13 @@
                         Text="Será instalado para todas as contas deste computador."
                         TextWrapping="Wrap" />
 
+                    <CheckBox
+                        x:Name="DesktopShortcutCheckBox"
+                        AutomationProperties.Name="Criar atalho na área de trabalho"
+                        Content="Criar atalho na área de trabalho"
+                        FontSize="17"
+                        HorizontalAlignment="Left" />
+
                     <StackPanel Spacing="10">
                         <ProgressBar
                             x:Name="ElevationProgress"
@@ -207,28 +215,32 @@
                             IsOpen="False" />
                     </StackPanel>
 
-                    <Grid ColumnSpacing="16">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="1.15*" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="12">
                         <Button
                             x:Name="InstallButton"
                             HorizontalAlignment="Stretch"
-                            AutomationProperties.HelpText="Solicita permissão administrativa sem instalar componentes nesta etapa"
+                            AutomationProperties.HelpText="Instala o aplicativo do Compasso neste computador"
                             Click="InstallButton_Click"
                             Content="Instalar"
                             Style="{StaticResource CompassoPrimaryButtonStyle}" />
                         <Button
-                            x:Name="CancelButton"
-                            Grid.Column="1"
+                            x:Name="UninstallButton"
                             HorizontalAlignment="Stretch"
-                            AutomationProperties.Name="Cancelar instalação"
+                            AutomationProperties.HelpText="Remove o aplicativo do Compasso deste computador"
+                            Click="UninstallButton_Click"
+                            Content="Desinstalar"
+                            FontSize="17"
+                            MinHeight="52"
+                            Visibility="Collapsed" />
+                        <Button
+                            x:Name="CancelButton"
+                            HorizontalAlignment="Stretch"
+                            AutomationProperties.Name="Fechar instalador"
                             Click="CancelButton_Click"
-                            Content="Cancelar"
+                            Content="Fechar"
                             FontSize="17"
                             MinHeight="52" />
-                    </Grid>
+                    </StackPanel>
 
                     <Grid ColumnSpacing="14">
                         <Grid.ColumnDefinitions>

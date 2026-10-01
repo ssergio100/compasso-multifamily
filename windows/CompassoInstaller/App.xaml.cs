@@ -55,7 +55,44 @@ public partial class App : Application
 #endif
             if (ElevationVerifier.TryGetProbePipeName(Environment.GetCommandLineArgs(), out var pipeName))
             {
-                Environment.ExitCode = await ElevationVerifier.RunProbeAsync(pipeName);
+                using var lifetime = new CancellationTokenSource();
+                Console.CancelKeyPress += (_, eventArgs) =>
+                {
+                    eventArgs.Cancel = true;
+                    lifetime.Cancel();
+                };
+
+                Environment.ExitCode = await ElevatedWorker.RunAsync(pipeName, lifetime.Token);
+                Exit();
+                return;
+            }
+
+            if (Environment.GetCommandLineArgs().Contains(
+                    InstallProtocol.UnattendedInstallArgument,
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                if (!ElevationVerifier.IsProcessElevated())
+                {
+                    Environment.ExitCode = 5;
+                    Exit();
+                    return;
+                }
+
+                var plan = InstallPlanFactory.TryCreatePlan(AppContext.BaseDirectory);
+                if (plan is null)
+                {
+                    Environment.ExitCode = 2;
+                    Exit();
+                    return;
+                }
+
+                InstallPlanFactory.SetDesktopShortcut(
+                    plan,
+                    File.Exists(InstallPaths.DesktopShortcutPath));
+
+                var executor = new InstallPlanExecutor(plan, AppContext.BaseDirectory);
+                await executor.ApplyAsync((_, _) => Task.CompletedTask, CancellationToken.None);
+                Environment.ExitCode = 0;
                 Exit();
                 return;
             }
@@ -71,9 +108,18 @@ public partial class App : Application
         }
         catch (Exception exception)
         {
+            _ = exception;
 #if DEBUG
             File.AppendAllText(StartupLogPath, $"{DateTimeOffset.Now:O} Startup failed: {exception}{Environment.NewLine}");
 #endif
+            if (Environment.GetCommandLineArgs().Contains(
+                    InstallProtocol.UnattendedInstallArgument,
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                Environment.ExitCode = 3;
+                Exit();
+                return;
+            }
             throw;
         }
     }

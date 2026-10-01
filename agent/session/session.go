@@ -12,6 +12,7 @@ type Session struct {
 	Class           string
 	State           string
 	Remote          bool
+	Locked          bool
 }
 
 // BalanceAuthorizationID distinguishes a logind session across agent runtime
@@ -26,7 +27,7 @@ func (s Session) BalanceAuthorizationID() string {
 
 // IsLocalGraphical reports whether usage in this session counts for phase 3.
 func (s Session) IsLocalGraphical() bool {
-	graphical := s.Type == "x11" || s.Type == "wayland"
+	graphical := s.Type == "x11" || s.Type == "wayland" || s.Type == "windows"
 	userSession := s.Class == "user" || s.Class == "user-early"
 	alive := s.State != "closing"
 	return graphical && userSession && alive && !s.Remote

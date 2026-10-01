@@ -31,7 +31,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve database path: %w", err)
 	}
-	dsn := url.URL{Scheme: "file", Path: absolute}
+	uriPath := filepath.ToSlash(absolute)
+	if filepath.VolumeName(absolute) != "" && uriPath[0] != '/' {
+		uriPath = "/" + uriPath
+	}
+	dsn := url.URL{Scheme: "file", Path: uriPath}
 	query := dsn.Query()
 	query.Set("_busy_timeout", "5000")
 	query.Set("_foreign_keys", "on")

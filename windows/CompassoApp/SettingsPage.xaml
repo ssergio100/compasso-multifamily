@@ -1,0 +1,206 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="CompassoApp.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:CompassoApp"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Background="{ThemeResource CompassoSettingsPageBrush}"
+    mc:Ignorable="d">
+
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled" HorizontalScrollMode="Disabled" VerticalScrollBarVisibility="Auto">
+        <Grid Padding="24,20,24,16">
+            <!-- Stretch, e nao Center: com Center o painel encolhe ate o conteudo. -->
+            <StackPanel MaxWidth="456" HorizontalAlignment="Stretch" Spacing="6">
+
+                <!--
+                    Lockup da marca centralizado acima do titulo serifado e do
+                    texto de apoio, como no conceito de Configuracoes. A marca
+                    da barra de titulo segue como iconografia do shell.
+                -->
+                <StackPanel Spacing="5">
+                    <StackPanel
+                        HorizontalAlignment="Center"
+                        Spacing="4">
+                    <Image
+                        Width="56"
+                        Height="42"
+                        HorizontalAlignment="Center"
+                        Source="Assets/CompassoBrandMark.png"
+                        AutomationProperties.Name="Símbolo do Compasso" />
+                        <TextBlock
+                            FontSize="21"
+                            FontWeight="SemiBold"
+                            Foreground="{ThemeResource CompassoInkBrush}"
+                            Text="Compasso"
+                            TextAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock
+                        FontFamily="Georgia"
+                        FontSize="26"
+                        FontWeight="Normal"
+                        CharacterSpacing="-20"
+                        Foreground="{ThemeResource CompassoInkBrush}"
+                        HorizontalAlignment="Center"
+                        Margin="0,0,0,0"
+                        Text="Configurações do Compasso"
+                        TextAlignment="Center"
+                        TextWrapping="Wrap" />
+                    <TextBlock
+                        FontSize="16"
+                        Foreground="{ThemeResource CompassoMutedBrush}"
+                        HorizontalAlignment="Center"
+                        Text="Conecte este computador ao seu painel familiar."
+                        TextAlignment="Center"
+                        TextWrapping="Wrap" />
+                </StackPanel>
+
+                <Border
+                    Background="{ThemeResource CompassoChipBrush}"
+                    CornerRadius="14"
+                    HorizontalAlignment="Center"
+                    Padding="14,5">
+                    <TextBlock
+                        FontSize="14"
+                        FontWeight="SemiBold"
+                        Foreground="{ThemeResource CompassoInkBrush}"
+                        Text="Ainda não configurado"
+                        TextAlignment="Center" />
+                </Border>
+
+                <!-- Conta Windows, com as contas existentes na maquina. -->
+                <StackPanel Spacing="3">
+                    <TextBlock
+                        Style="{StaticResource CompassoSectionLabelStyle}"
+                        Text="Conta que será controlada" />
+                    <TextBlock Style="{StaticResource CompassoFieldLabelStyle}" Text="Conta Windows" />
+                    <ComboBox
+                        x:Name="AccountBox"
+                        AutomationProperties.Name="Conta Windows"
+                        HorizontalAlignment="Stretch"
+                        MinHeight="32"
+                        PlaceholderText="Selecione a conta" />
+                    <CheckBox
+                        x:Name="ConsentCheckBox"
+                        Content="Confirmo que esta conta poderá ter a sessão bloqueada pelo Compasso."
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Left"
+                        FontSize="13"
+                        MinHeight="32" />
+                </StackPanel>
+
+                <!-- Conexao com o painel. -->
+                <StackPanel Spacing="8">
+                    <TextBlock Style="{StaticResource CompassoSectionLabelStyle}" Text="Conexão com o painel" />
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource CompassoFieldLabelStyle}" Text="Endereço do servidor" />
+                        <Border Style="{StaticResource CompassoFieldBorderStyle}">
+                            <TextBox
+                                x:Name="ServerBox"
+                                AutomationProperties.Name="Endereco do servidor"
+                                Style="{StaticResource CompassoFieldBoxStyle}"
+                                Text="https://apifamily.smresume.com" />
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource CompassoFieldLabelStyle}" Text="Identificador do dispositivo" />
+                        <Border Style="{StaticResource CompassoFieldBorderStyle}">
+                            <TextBox
+                                x:Name="DeviceIdBox"
+                                AutomationProperties.Name="Identificador do dispositivo"
+                                PlaceholderText="Cole o identificador gerado no painel"
+                                Style="{StaticResource CompassoFieldBoxStyle}" />
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource CompassoFieldLabelStyle}" Text="Token do dispositivo" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="1" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Border
+                                Grid.ColumnSpan="3"
+                                Style="{StaticResource CompassoFieldBorderStyle}" />
+                            <PasswordBox
+                                x:Name="TokenBox"
+                                AutomationProperties.Name="Token do dispositivo"
+                                PasswordRevealMode="Hidden"
+                                PlaceholderText="Cole o token do painel"
+                                Style="{StaticResource CompassoPasswordFieldBoxStyle}" />
+                            <Rectangle
+                                Grid.Column="1"
+                                Width="1"
+                                Margin="0,6"
+                                Fill="{ThemeResource CompassoLineBrush}" />
+                            <Button
+                                x:Name="RevealTokenButton"
+                                AutomationProperties.Name="Mostrar token"
+                                Click="RevealTokenButton_Click"
+                                Content="Mostrar"
+                                Grid.Column="2"
+                                MinHeight="32"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Foreground="{ThemeResource CompassoSuccessBrush}"
+                                FontWeight="SemiBold" />
+                        </Grid>
+                        <TextBlock
+                            FontSize="14"
+                            Foreground="{ThemeResource CompassoMutedBrush}"
+                            Text="O token fica protegido neste computador."
+                            TextWrapping="Wrap" />
+                    </StackPanel>
+                </StackPanel>
+
+                <InfoBar
+                    x:Name="StatusInfoBar"
+                    AutomationProperties.LiveSetting="Polite"
+                    IsClosable="False"
+                    IsOpen="False" />
+
+                    <Button
+                    x:Name="SaveButton"
+                    AutomationProperties.Name="Salvar e conectar"
+                    Click="SaveButton_Click"
+                    Content="Salvar e conectar"
+                    HorizontalAlignment="Stretch"
+                    FontSize="16"
+                    MinHeight="40"
+                    Style="{StaticResource CompassoPrimaryButtonStyle}" />
+
+                <!--
+                    A ultima mensagem da tela: a seta aponta para tras e o texto
+                    fica centralizado, porque aqui ja nao ha nada a preencher
+                    depois dela.
+                -->
+                <Button
+                    x:Name="BackButton"
+                    AutomationProperties.Name="Voltar para adicionar tempo"
+                    Click="BackButton_Click"
+                    HorizontalAlignment="Center"
+                    HorizontalContentAlignment="Center"
+                    Margin="0"
+                    Style="{StaticResource CompassoLinkButtonStyle}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon
+                            FontSize="15"
+                            Foreground="{ThemeResource CompassoSuccessBrush}"
+                            Glyph="&#xE72B;"
+                            VerticalAlignment="Center" />
+                        <TextBlock
+                            Foreground="{ThemeResource CompassoSuccessBrush}"
+                            Text="Voltar para adicionar tempo"
+                            VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</Page>

@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "CompassoInstaller (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "CompassoInstaller (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+@media (max-height: 820px) {
+  .settings-content { padding-block: 14px 12px; }
+  .brand-large { display: grid; gap: 0; margin-bottom: 8px; }
+  .brand-large img { width: 44px; height: 44px; }
+  .brand-large strong { font-size: 21px; }
+  .settings h1 { font-size: 30px; }
+  .settings-lead { font-size: 16px; margin: 5px 0 7px; }
+  .status { padding: 6px 16px; margin-bottom: 10px; font-size: 14px; }
+  form { gap: 10px; }
+  fieldset { gap: 4px; }
+  legend { font-size: 17px; margin-bottom: 4px; }
+  fieldset label { font-size: 14px; }
+  .settings input, .settings select, .token-field { height: 42px; }
+  .select-wrap > svg { top: 10px; }
+  .consent { margin-top: 4px; }
+  .consent input { width: 28px; height: 28px; }
+  .consent input:checked::after { transform: translate(6px, 6px) rotate(-45deg); }
+  .token-note { font-size: 13px; }
+  .save-button { height: 46px; }
+  .back-button { padding-block: 7px; }
+}

@@ -30,6 +30,16 @@
     <Content Include="Assets\Wide310x150Logo.scale-200.png" />
   </ItemGroup>
 
+  <ItemGroup Condition="'$(SkipAppProjectReference)' != 'true'">
+    <ProjectReference Include="..\CompassoApp\CompassoApp.csproj"
+                      ReferenceOutputAssembly="false"
+                      AdditionalProperties="SkipInstallerPackaging=true" />
+  </ItemGroup>
+
+  <Target Name="RefreshInstallerPayload" AfterTargets="Build">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\build-payload.ps1&quot; -Configuration &quot;$(Configuration)&quot; -Platform &quot;$(Platform)&quot; -TargetFramework &quot;$(TargetFramework)&quot; -RuntimeIdentifier &quot;$(RuntimeIdentifier)&quot;" />
+  </Target>
+
   <ItemGroup>
     <Manifest Include="$(ApplicationManifest)" />
   </ItemGroup>

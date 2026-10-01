@@ -47,3 +47,4 @@ npm-debug.log*
 .DS_Store
 *.swp
 *~
+windows/build/

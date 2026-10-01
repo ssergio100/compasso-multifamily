@@ -137,6 +137,7 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 			break
 		}
 	}
+	chargeableGraphicalSession := activeGraphicalSession && !activeGraphicalSessionLocked
 	if d.synchronizationSource != nil {
 		d.synchronizationSource.SetGraphicalSession(activeGraphicalSession, activeGraphicalSessionID, activeGraphicalSessionLocked)
 	}
@@ -169,7 +170,7 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 		}
 	} else if d.trackerDate != localDate {
 		midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-		if d.lastShouldCount && d.lastHadActiveSession {
+		if d.lastShouldCount && d.lastHadActiveSession && !activeGraphicalSessionLocked {
 			beforeMidnight := cappedElapsed(d.lastAt, midnight, d.lastCountUntil)
 			if err := d.addElapsed(ctx, beforeMidnight, midnight); err != nil {
 				return Status{}, fmt.Errorf("account usage before local midnight: %w", err)
@@ -182,13 +183,13 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 		if err != nil {
 			return Status{}, err
 		}
-		if newDayDecision.ShouldCount && activeGraphicalSession {
+		if newDayDecision.ShouldCount && chargeableGraphicalSession {
 			afterMidnight := cappedElapsed(midnight, now, newDayDecision.NextBlockAt)
 			if err := d.addElapsed(ctx, afterMidnight, now); err != nil {
 				return Status{}, fmt.Errorf("account usage after local midnight: %w", err)
 			}
 		}
-	} else if !d.lastAt.IsZero() && d.lastShouldCount && d.lastHadActiveSession {
+	} else if !d.lastAt.IsZero() && d.lastShouldCount && d.lastHadActiveSession && !activeGraphicalSessionLocked {
 		elapsed := cappedElapsed(d.lastAt, now, d.lastCountUntil)
 		if err := d.addElapsed(ctx, elapsed, now); err != nil {
 			return Status{}, fmt.Errorf("account allowed usage: %w", err)
@@ -237,7 +238,7 @@ func (d *Daemon) Step(ctx context.Context, now time.Time) (Status, error) {
 	// failure must not cause the same elapsed interval to be counted twice.
 	d.lastAt = now
 	d.lastShouldCount = decision.ShouldCount
-	d.lastHadActiveSession = activeGraphicalSession
+	d.lastHadActiveSession = chargeableGraphicalSession
 	d.lastCountUntil = decision.NextBlockAt
 	if awaitingSynchronization {
 		return status, nil

@@ -41,7 +41,13 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve database path: %w", err)
 	}
-	dsnURL := url.URL{Scheme: "file", Path: absolutePath}
+	uriPath := filepath.ToSlash(absolutePath)
+	// A Windows drive path must be represented as file:///C:/...; without the
+	// leading slash net/url interprets the drive name as a URI authority.
+	if filepath.VolumeName(absolutePath) != "" && uriPath[0] != '/' {
+		uriPath = "/" + uriPath
+	}
+	dsnURL := url.URL{Scheme: "file", Path: uriPath}
 	query := dsnURL.Query()
 	query.Set("_busy_timeout", "5000")
 	query.Set("_foreign_keys", "on")

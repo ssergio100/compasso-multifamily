@@ -16,13 +16,22 @@ public sealed partial class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
 
-        AppWindow.SetIcon("Assets/AppIcon.ico");
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico"));
         AppWindow.Resize(new SizeInt32(1180, 720));
+        Closed += MainWindow_Closed;
 
         RootFrame.NavigationFailed += RootFrame_NavigationFailed;
         if (!RootFrame.Navigate(typeof(MainPage)))
         {
             throw new InvalidOperationException("Não foi possível abrir a página inicial do instalador.");
+        }
+    }
+
+    private async void MainWindow_Closed(object sender, WindowEventArgs args)
+    {
+        if (RootFrame.Content is MainPage page)
+        {
+            await page.ShutdownSessionAsync();
         }
     }
 
