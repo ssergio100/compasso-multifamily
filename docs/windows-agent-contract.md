@@ -132,6 +132,48 @@ filas locais duráveis. Nenhuma falha confirma evento ou comando.
   Service; notificações freedesktop viram notificações da sessão controlada.
 - O serviço não pode depender do processo Wails nem de um usuário conectado.
 
+## IPC local no Windows
+
+O serviço expõe as operações privilegiadas em `\\.\pipe\CompassoAgent`, o
+equivalente do D-Bus de sistema do Linux. O transporte e seu controle de acesso
+ficam em `agent/windowsipc`; o motor de bônus, a verificação de senha e os textos
+permanecem nos pacotes compartilhados.
+
+- Enquadramento: prefixo `uint32` little-endian com o tamanho do payload,
+  seguido de JSON. Payload limitado a 64 KiB; tamanho fora da faixa é violação
+  de protocolo, nunca uma alocação.
+- Operações: `add_local_bonus`, `get_synchronization_report`, `ping` e
+  `get_public_configuration`.
+- O serviço responde uma requisição por conexão e fecha a conexão em seguida,
+  para não deixar contexto autenticado aberto no pipe.
+- O token do dispositivo nunca atravessa o pipe; a operação de configuração
+  expõe somente dados publicáveis.
+
+Controle de acesso, medido nesta plataforma:
+
+- O DACL concede controle total a LocalSystem e ao grupo de administradores, e
+  apenas leitura e escrita (`GRGW`) à conta controlada. `GRGW` é suficiente
+  porque a interface só envia uma requisição e lê a resposta; `GA` incluiria
+  `FILE_CREATE_PIPE_INSTANCE` e permitiria que um processo da conta controlada
+  criasse instâncias do pipe.
+- A primeira instância usa `FILE_FLAG_FIRST_PIPE_INSTANCE`, que faz a criação
+  falhar quando o nome já existe. Sem isso, um processo da conta controlada
+  poderia sequestrar o nome do pipe, receber a senha do responsável e forjar uma
+  resposta de bônus concedido.
+- `PIPE_REJECT_REMOTE_CLIENTS` **não é usado**: este build do Windows rejeita a
+  flag com `ERROR_INVALID_PARAMETER`, verificado em Go e nativo, em todas as
+  combinações de descritor de segurança e de contagem de instâncias. Clientes
+  remotos são negados pelo DACL, porque um token autenticado pela rede nunca é
+  LocalSystem, administrador ou a conta controlada.
+
+Se uma versão futura do Windows aceitar a flag, ela deve ser somada como
+defesa adicional, nunca em substituição ao DACL.
+
+O pipe é reconstruído automaticamente se a interface parar, sem reiniciar o
+serviço. A aplicação de política e o bloqueio de sessão continuam ativos enquanto
+a interface está indisponível: o serviço nunca deixa de fazer valer a política
+porque um canal de interface falhou.
+
 ## Ligação das interfaces
 
 ### Adicionar tempo

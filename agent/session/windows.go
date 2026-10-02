@@ -151,11 +151,11 @@ func queryWTSString(sessionID uint32, informationClass uintptr) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	defer windows.WTSFreeMemory(pointer)
-	if pointer == 0 || size < 2 {
+	defer windows.WTSFreeMemory(uintptr(pointer))
+	if pointer == nil || size < 2 {
 		return "", nil
 	}
-	return windows.UTF16PtrToString((*uint16)(unsafe.Pointer(pointer))), nil
+	return windows.UTF16PtrToString((*uint16)(pointer)), nil
 }
 
 func queryWTSUint16(sessionID uint32, informationClass uintptr) (uint16, error) {
@@ -163,11 +163,11 @@ func queryWTSUint16(sessionID uint32, informationClass uintptr) (uint16, error) 
 	if err != nil {
 		return 0, err
 	}
-	defer windows.WTSFreeMemory(pointer)
-	if pointer == 0 || size < 2 {
+	defer windows.WTSFreeMemory(uintptr(pointer))
+	if pointer == nil || size < 2 {
 		return 0, errors.New("Windows session information is incomplete")
 	}
-	return *(*uint16)(unsafe.Pointer(pointer)), nil
+	return *(*uint16)(pointer), nil
 }
 
 func queryWTSSessionFlag(sessionID uint32) (int32, error) {
@@ -175,29 +175,32 @@ func queryWTSSessionFlag(sessionID uint32) (int32, error) {
 	if err != nil {
 		return -1, err
 	}
-	defer windows.WTSFreeMemory(pointer)
+	defer windows.WTSFreeMemory(uintptr(pointer))
 	// WTSINFOEXW begins with Level and four bytes of x64 union alignment;
 	// WTSINFOEX_LEVEL1 then begins with SessionId, SessionState and SessionFlags.
-	const sessionFlagOffset = uintptr(16)
-	if pointer == 0 || uintptr(size) < sessionFlagOffset+4 {
+	const sessionFlagOffset = 16
+	if pointer == nil || size < sessionFlagOffset+4 {
 		return -1, errors.New("extended Windows session information is incomplete")
 	}
-	level := *(*uint32)(unsafe.Pointer(pointer))
+	level := *(*uint32)(pointer)
 	if level != 1 {
 		return -1, fmt.Errorf("unsupported Windows session information level %d", level)
 	}
-	return *(*int32)(unsafe.Pointer(pointer + sessionFlagOffset)), nil
+	return *(*int32)(unsafe.Add(pointer, sessionFlagOffset)), nil
 }
 
-func queryWTSInformation(sessionID uint32, informationClass uintptr) (uintptr, uint32, error) {
-	var pointer uintptr
+// queryWTSInformation returns the buffer allocated by WTSQuerySessionInformation.
+// The pointer is carried as unsafe.Pointer instead of uintptr so that callers
+// never rebuild a pointer from an integer.
+func queryWTSInformation(sessionID uint32, informationClass uintptr) (unsafe.Pointer, uint32, error) {
+	var pointer unsafe.Pointer
 	var size uint32
 	result, _, callErr := wtsQuerySessionInformationProc.Call(
 		wtsCurrentServerHandle, uintptr(sessionID), informationClass,
 		uintptr(unsafe.Pointer(&pointer)), uintptr(unsafe.Pointer(&size)),
 	)
 	if result == 0 {
-		return 0, 0, fmt.Errorf("query Windows session %d information %d: %w", sessionID, informationClass, callErr)
+		return nil, 0, fmt.Errorf("query Windows session %d information %d: %w", sessionID, informationClass, callErr)
 	}
 	return pointer, size, nil
 }

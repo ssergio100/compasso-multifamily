@@ -1,7 +1,7 @@
 import './style.css';
 import './responsive.css';
 import brandMark from './assets/images/compasso-brand-mark.png';
-import { WindowsUser } from '../wailsjs/go/main/App';
+import { WindowsUser, AddTime, Synchronization, Settings } from '../wailsjs/go/main/App';
 
 const icon = (name) => ({
   eye: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/></svg>',
@@ -12,7 +12,14 @@ const icon = (name) => ({
 
 let duration = 30;
 let account = 'Conta atual';
+let agentSettings = null;
 const brand = (large = false) => `<div class="brand ${large ? 'brand-large' : ''}"><img src="${brandMark}" alt=""><strong>Compasso</strong></div>`;
+const minutesLabel = (seconds) => `${Math.round(seconds / 60)} min`;
+
+function connectionView(state) {
+  const tone = state.available ? (state.online ? 'online' : 'offline') : 'unavailable';
+  return `<div class="connection ${tone}"><span></span> ${state.detail || 'Verificando conexão'}</div>`;
+}
 
 function addTimeView() {
   return `<main class="screen add-time">
@@ -20,12 +27,13 @@ function addTimeView() {
     <section class="content">
       <h1>Adicionar tempo</h1>
       <p class="lead">Escolha o período e confirme com a senha do responsável.</p>
-      <div class="connection"><span></span> Servidor conectado</div>
+      <div class="connection-slot">${connectionView(window.__syncState || {})}</div>
       <div class="durations" role="radiogroup" aria-label="Período">
         ${[15, 30, 60, 120].map(value => `<button class="duration ${value === duration ? 'selected' : ''}" role="radio" aria-checked="${value === duration}" data-duration="${value}">${value} min</button>`).join('')}
       </div>
       <label class="field-label" for="parent-password">Senha do responsável</label>
       <div class="password-field"><input id="parent-password" type="password" placeholder="Digite sua senha" autocomplete="current-password"><button class="reveal" type="button" aria-label="Mostrar senha">${icon('eye')}</button></div>
+      <div class="feedback" role="status" aria-live="polite"></div>
       <button class="primary add-button" type="button">Adicionar ${duration} minutos</button>
       <p class="privacy">${icon('info')}<em>A senha <strong>não será</strong> armazenada.</em></p>
     </section>
@@ -34,11 +42,13 @@ function addTimeView() {
 }
 
 function settingsView() {
+  const configured = agentSettings && agentSettings.configured;
+  const deviceId = agentSettings && agentSettings.deviceId ? agentSettings.deviceId : '';
   return `<main class="screen settings"><section class="settings-content">
     ${brand(true)}
     <h1>Configurações do Compasso</h1>
     <p class="settings-lead">Conecte este computador ao seu painel familiar.</p>
-    <div class="status">Ainda não configurado</div>
+    <div class="status ${configured ? 'ok' : ''}">${configured ? 'Configurado' : 'Ainda não configurado'}</div>
     <form id="settings-form">
       <fieldset><legend>Conta que será controlada</legend>
         <label for="windows-account">Conta Windows</label>
@@ -46,8 +56,8 @@ function settingsView() {
         <label class="consent"><input type="checkbox" required checked><span>Confirmo que esta conta poderá ter a sessão bloqueada pelo Compasso.</span></label>
       </fieldset>
       <fieldset><legend>Conexão com o painel</legend>
-        <label for="server">Endereço do servidor</label><input id="server" type="url" value="https://apifamily.smresume.com" required>
-        <label for="device-id">Identificador do dispositivo</label><input id="device-id" placeholder="Cole o identificador gerado no painel" required>
+        <label for="server">Endereço do servidor</label><input id="server" type="url" value="${agentSettings && agentSettings.serverUrl ? agentSettings.serverUrl : 'https://apifamily.smresume.com'}" required>
+        <label for="device-id">Identificador do dispositivo</label><input id="device-id" value="${deviceId}" placeholder="Cole o identificador gerado no painel" required>
         <label for="token">Token do dispositivo</label>
         <div class="token-field"><input id="token" type="password" required><button class="show-token" type="button">Mostrar</button></div>
         <p class="token-note">O token fica protegido neste computador.</p>
@@ -56,6 +66,49 @@ function settingsView() {
     </form>
     <button class="back-button" type="button">Voltar para adicionar tempo</button>
   </section></main>`;
+}
+
+function showFeedback(tone, text) {
+  const feedback = document.querySelector('.feedback');
+  if (!feedback) return;
+  feedback.className = `feedback ${tone}`;
+  feedback.textContent = text;
+}
+
+async function submitAddTime() {
+  const password = document.querySelector('#parent-password');
+  const button = document.querySelector('.add-button');
+  if (!password.value) { password.focus(); return; }
+
+  button.disabled = true;
+  button.textContent = 'Enviando…';
+  showFeedback('', '');
+  try {
+    const result = await AddTime(password.value, duration);
+    if (result && result.ok) {
+      const granted = result.bonusSeconds ? ` ${minutesLabel(result.bonusSeconds)}` : '';
+      showFeedback('success', `Tempo adicionado${granted}.`);
+      password.value = '';
+    } else {
+      showFeedback('error', (result && result.message) || 'Não foi possível adicionar tempo.');
+    }
+  } catch (error) {
+    showFeedback('error', 'Não foi possível falar com o serviço do Compasso.');
+  } finally {
+    button.disabled = false;
+    button.textContent = `Adicionar ${duration} minutos`;
+  }
+}
+
+async function refreshSyncState() {
+  try {
+    const state = await Synchronization();
+    window.__syncState = state || {};
+  } catch (error) {
+    window.__syncState = { available: false, detail: 'Serviço do Compasso indisponível' };
+  }
+  const slot = document.querySelector('.connection-slot');
+  if (slot && window.__syncState) slot.innerHTML = connectionView(window.__syncState);
 }
 
 function bindAddTime() {
@@ -69,11 +122,13 @@ function bindAddTime() {
     password.type = show ? 'text' : 'password';
     event.currentTarget.setAttribute('aria-label', show ? 'Ocultar senha' : 'Mostrar senha');
   });
-  document.querySelector('.settings-link').addEventListener('click', () => render('settings'));
-  document.querySelector('.add-button').addEventListener('click', () => {
-    if (!password.value) { password.focus(); return; }
-    document.querySelector('.add-button').textContent = `Solicitação de ${duration} minutos enviada`;
+  document.querySelector('.settings-link').addEventListener('click', async () => {
+    try { agentSettings = await Settings(); } catch (error) { agentSettings = null; }
+    render('settings');
   });
+  document.querySelector('.add-button').addEventListener('click', submitAddTime);
+  password.addEventListener('keydown', event => { if (event.key === 'Enter') submitAddTime(); });
+  refreshSyncState();
 }
 
 function bindSettings() {

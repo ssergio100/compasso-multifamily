@@ -1,6 +1,6 @@
 module Compasso
 
-go 1.23.0
+go 1.18
 
 require github.com/wailsapp/wails/v2 v2.15.0
 

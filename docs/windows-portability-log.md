@@ -1663,15 +1663,181 @@ validação abaixo ocorreu pelo caminho de produto: Session 0, LocalSystem.
 - Notificações nativas do Windows: agreed a arquitetura (agente residente na
   sessão), nada implementado. O ponto de extensão é o `Notifier` no-op em
   `agent/cmd/compasso-agent-windows/main_windows.go`.
-- `go test ./agent/...` no Windows continua falhando em três pacotes
-  Linux-específicos: `agent/cmd/tempo-agent` (`undefined: session.NewLogind`),
-  `agent/setup` (diretório de sincronização sem acesso) e `agent/syncstatus`
-  (permissões 0666). São pré-existentes, mas vão poluir validações futuras.
+- `go test ./agent/...` no Windows agora passa com CGO habilitado (MSYS2 UCRT64).
+  Os três pacotes Linux-only (`agent/cmd/tempo-agent`, `agent/setup`,
+  `agent/syncstatus`) foram restritos a `//go:build !windows`, portanto o build
+  Windows ignora seus arquivos e o Linux continua testando-os integralmente.
+  Também corrigido `agent/session/windows.go` para evitar construções inseguras
+  de ponteiros detectadas por `go vet` no Windows.
 - Build Windows continua dependente da VM: não há cross-compiler com CGO neste
   Linux e o `gccgo` disponível não suporta o backend Windows de `x/sys`.
+- Rejeição de sessão RDP real continua coberta apenas por teste unitário.
 
 ### Próximo passo
 
 Item 5: IPC local protegido e conexão da tela **Adicionar tempo**. O serviço já
 está com política, sessão e bloqueio funcionando, então falta expor a operação
 privilegiada de bônus com senha, incluindo rate limit e evento durável.
+
+## Item 5 — IPC local protegido e Adicionar tempo
+
+Servidor (`agent/windowsipc`), cliente (`windows/CompassoWails/ipcclient`) e
+tela **Adicionar tempo** ligados de ponta a ponta. Pipe em
+`\\.\pipe\CompassoAgent`, enquadramento `uint32` little-endian + JSON, limite de
+64 KiB, uma requisição por conexão.
+
+### Causa raiz do `Parâmetro incorreto`
+
+`PIPE_REJECT_REMOTE_CLIENTS` é rejeitada por este build (10.0.26200) com
+`ERROR_INVALID_PARAMETER`. Medido em Go e nativo, em todas as combinações de
+descritor de segurança e contagem de instâncias, inclusive com `FILE_FLAG_OVERLAPPED`
+e com descritor nulo. A flag foi removida e o DACL passou a ser o controle:
+um token autenticado pela rede nunca é LocalSystem, administrador ou a conta
+controlada.
+
+### Quatro defeitos de lifecycle encontrados depois
+
+A criação do pipe deixou de ser o único problema. Os testes e2e novos expuseram:
+
+1. **Contagem de bytes do I/O overlapped.** Em `ReadFile`/`WriteFile` que não
+   completam de imediato, a contagem só vem em `GetOverlappedResult`. Ler a
+   variável deixada por `ReadFile` produzia `0` e um `io.EOF` falso, fechando a
+   conexão sem responder. Era intermitente: o `ping` curto quase sempre
+   completava de imediato e passava.
+2. **Handle fechado duas vezes.** `Conn.Close` fechava o handle e o `Listener`
+   mantinha o valor obsoleto. O Windows reutiliza valores de handle, então o
+   segundo fechamento derrubava a instância criada para o cliente seguinte.
+3. **Corrida de startup.** `Listen` criava a instância e o primeiro `Accept` a
+   substituía; um cliente que conectasse nesse intervalo perdia o pipe.
+4. **Saída silenciosa do laço.** Qualquer erro desconectado fazia `Serve`
+   retornar `nil`, deixando o pipe vivo sem ninguém aceitando: os clientes
+   seguintes travavam e quebravam.
+
+O serviço silenciosamente sem interface foi o sintoma que expôs o ponto 4: o
+SCM seguia `Running` com um binário antigo, e nada no log indicava falta de pipe.
+
+### Endurecimento
+
+- `GA` da conta controlada passou a `GRGW`. `GA` inclui
+  `FILE_CREATE_PIPE_INSTANCE`, que permitiria a um processo da conta controlada
+  criar instâncias do pipe.
+- `FILE_FLAG_FIRST_PIPE_INSTANCE` na primeira instância: a criação falha se o
+  nome já existir, impedindo sequestro do nome, captura da senha do responsável
+  e resposta forjada de bônus.
+- `serveLocalInterface` reconstrói o pipe se a interface parar, sem reiniciar o
+  serviço. A política e o bloqueio continuam ativos enquanto a interface cai.
+
+### Validação na VM
+
+- `ping` 10/10 sequenciais; suíte e2e com 12 requisições e operações
+  intercaladas; cliente com 15 requisições.
+- Senha incorreta → `invalid_password`; repetição imediata → `rate_limited`;
+  operação desconhecida → `invalid_request`.
+- Senha correta → `ok`, UUID durável, `bonus_seconds=900`, `total_seconds=900`,
+  `remaining_seconds` de 4800 para 5700 e evento já sincronizado
+  (`pending_events` vazio).
+
+Conta de testes: a execução concedeu dois bônus de 15 minutos em vez de um,
+porque o teste de aceite supunha que um bônus concedido também seria limitado
+por taxa. Não é: `localauth` conta apenas tentativas **falhadas**. Registrado
+como teste em `agent/localauth/service_test.go`
+(`TestSuccessfulGrantIsNotRateLimited`), porque é a diferença entre proteger
+contra tentativa repetida e travar o usuário legítimo.
+
+### Divergência conhecida
+
+O módulo Wails é standalone e não importa `agent/windowsipc`, porque
+`localauth` puxa `agent/storage` e CGO/sqlite, que não pertencem a um
+instalador de interface. O contrato do wire é duplicado em
+`windows/CompassoWails/ipcclient/protocol.go`, com o canônico em
+`agent/windowsipc/protocol_windows.go` apontado no comentário do pacote.
+
+`get_public_configuration` já está exposto no servidor para alimentar a tela de
+Configurações, mas a tela ainda não grava configuração: isso é o item 6.
+
+### Dívidas conhecidas, não tratadas
+
+- Notificações nativas: arquitetura acordada (agente residente na sessão), nada
+  implementado. Ponto de extensão é o `Notifier` no-op em
+  `agent/cmd/compasso-agent-windows/main_windows.go`.
+- `go test ./agent/...` no Windows falha em três pacotes Linux-específicos:
+  resolvido — ver seção "Higiene de build entre plataformas".
+- Build Windows continua dependente da VM: sem cross-compiler com CGO neste
+  Linux, e o `gccgo` disponível não suporta o backend Windows de `x/sys`.
+- Rejeição de sessão RDP real continua coberta apenas por teste unitário.
+
+## Higiene de build entre plataformas
+
+`go test ./agent/...` no Windows falhava em três pacotes. Nenhum era bug de
+lógica: eram três erros de classificação de plataforma.
+
+- `agent/cmd/tempo-agent`: usa `syscall.Umask` e `session.NewLogind`, ambos
+  inexistentes no Windows. Era falha de *build*, não de teste.
+- `agent/setup`: `WriteFileAtomically` faz `fsync` no diretório pai, e o Windows
+  recusa `FlushFileBuffers` em handle de diretório.
+- `agent/syncstatus`: o teste afirma bits POSIX `0600`, que não existem no
+  Windows.
+
+Os três são ferramentas do agente Linux, e o caminho equivalente no Windows já
+existe pelo serviço e pela tela. `agent/cmd/tempo-agent-configure` também foi
+restringido, porque importa `setup` e `syncstatus` e fixa `/etc/tempo-agent` e
+`/usr/bin/systemctl`.
+
+O critério não foi "fazer passar", mas "não fingir": os três pacotes prometem
+garantias POSIX reais — arquivo `0600`, recusa de symlink, diretório
+`root-only` — que no Windows não têm tradução honesta. Torná-los "portáteis"
+significaria remover as asserções que protegem a configuração no Linux para
+ganhar uma linha verde numa plataforma onde nada os executa.
+
+Verificado antes de agir: o `./...` do Go **ignora silenciosamente** diretórios
+cujos arquivos estão todos excluídos por build constraint, então a restrição não
+exige stubs e não polui a saída do build.
+
+O problema espelho também existia: `agent/cmd/compasso-agent-windows/doc.go` não
+tinha build tag, então no Linux o pacote era um `main` sem `main()` e
+`go build ./...` falhava na linkagem com `undefined reference to "main.main"`.
+Corrigido com `//go:build windows`, seguindo a convenção já usada em
+`agent/session/loginctl.go` e `windows.go`.
+
+### CGO é obrigatório para testar o agente no Windows
+
+Depois de resolver os três pacotes, a suite ainda falhava inteira em
+`agent/syncclient` com `Binary was compiled with 'CGO_ENABLED=0', go-sqlite3
+requires cgo to work`. Não é bug do Windows: o agente depende de
+`mattn/go-sqlite3`, e `go env CGO_ENABLED` é `0` por padrão na VM porque o gcc do
+MSYS2 só entra no `PATH` pelo script de build.
+
+Em vez de espalhar `t.Skip` pelos testes que dependem de SQLite — o que
+esconderia regressões reais — foi criado `windows/test-agent.ps1`, que replica o
+setup de CGO de `build-agent-service.ps1`. Pular testes deixaria a suite verde
+sem testar nada, e o agente não funciona no Windows sem CGO de qualquer forma.
+
+Resultado no Windows, com CGO habilitado: `go vet ./...`, `go build ./...` e
+`go test ./agent/...` com exit 0, doze pacotes verdes. No Linux: `make lint` e
+`go test ./...` limpos, com os quatro pacotes Linux-only ainda testados.
+
+### Ponteiros inseguros em `agent/session/windows.go`
+
+`go vet` no Windows apontou `possible misuse of unsafe.Pointer` na consulta WTS.
+Era um padrão real, não só cosmético: o buffer devolvido por
+`WTSQuerySessionInformation` via `uintptr` era convertido de volta para ponteiro
+no consumidor, com aritmética de ponteiro feita em espaço `uintptr`.
+
+Esse é o problema documentado de `unsafe`: converter `uintptr` de volta para
+`unsafe.Pointer` é inválido sob um coletor de lixo móvel, porque o coletor pode
+mover a alocação original entre a conversão e a leitura. `queryWTSInformation`
+agora devolve `unsafe.Pointer` de ponta a ponta e a leitura do deslocamento usa
+`unsafe.Add`.
+
+A mudança preserva comportamento, mas elimina um risco concreto: o serviço
+desserializa o estado de sessão para decidir se desconecta o usuário.
+
+Regra do agente: como vet e testes rodam no Linux com build tags, `agent/session`
+e `agent/windowsipc` só são exercitados no Windows. Build e testes Windows devem
+ser executados na VM para cobrir esses arquivos.
+
+### Próximo passo
+
+Item 6: conectar **Configurações** ao caminho privilegiado do serviço —
+seleção de conta e SID, URL, credenciais, gravação com DPAPI, início do
+serviço e primeiro heartbeat, sem que o token seja recuperável pela interface.

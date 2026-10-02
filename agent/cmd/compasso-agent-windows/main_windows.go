@@ -23,6 +23,7 @@ import (
 	"github.com/ssergio100/compasso/agent/session"
 	"github.com/ssergio100/compasso/agent/storage"
 	"github.com/ssergio100/compasso/agent/syncclient"
+	"github.com/ssergio100/compasso/agent/windowsipc"
 	"github.com/ssergio100/compasso/agent/windowsservice"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -161,7 +162,7 @@ func inspectState() error {
 			"revision": sessionState.Revision, "session_id": sessionState.SessionID,
 			"local_date": sessionState.LocalDate, "usage_seconds": sessionState.UsageSeconds,
 			"remaining_seconds": sessionState.RemainingSeconds,
-			"confirmed_at": sessionState.ConfirmedAt,
+			"confirmed_at":      sessionState.ConfirmedAt,
 		}
 	} else {
 		report["confirmed_session"] = nil
@@ -239,6 +240,37 @@ type silentNotifier struct{}
 
 func (silentNotifier) Notify(context.Context, alert.Alert) error { return nil }
 
+// configurationSource publishes only the settings that are safe to show. The
+// device token is never exposed through the pipe.
+type configurationSource struct {
+	path string
+}
+
+func (source configurationSource) PublicConfiguration() (windowsipc.PublicSettings, bool) {
+	settings, err := windowsservice.LoadConfiguration(source.path)
+	if err != nil {
+		return windowsipc.PublicSettings{}, false
+	}
+	public := settings.Public()
+func (source configurationSource) UpdatePublicConfiguration(request windowsipc.UpdatePublicConfigurationRequest) error {
+	settings, err := windowsservice.LoadConfiguration(source.path)
+	if err != nil {
+		return err
+	}
+	if request.ServerURL != "" {
+		settings.ServerURL = request.ServerURL
+	}
+	if request.DeviceID != "" {
+		settings.DeviceID = request.DeviceID
+	}
+	if request.ControlledUserSID != "" {
+		settings.ControlledUserSID = request.ControlledUserSID
+	}
+	if request.SetTokenWhenPresent && request.DeviceToken != "" {
+		settings.DeviceToken = request.DeviceToken
+	}
+	return windowsservice.SaveConfiguration(source.path, settings)
+}
 func runAgent(ctx context.Context, logger *log.Logger) error {
 	configPath, err := defaultConfigurationPath()
 	if err != nil {
@@ -286,9 +318,14 @@ func runAgent(ctx context.Context, logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
-	if _, err := localauth.NewService(store); err != nil {
+	localBonus, err := localauth.NewService(store)
+	if err != nil {
 		return err
 	}
+	ipcService := windowsipc.NewService(localBonus, synchronizer, configurationSource{path: configPath})
+	go serveLocalInterface(ctx, ipcService, settings.ControlledUserSID, logger)
+	logger.Printf("local interface ready pipe=%s", windowsipc.PipeName)
+
 	policyDaemon.SetSynchronizationSource(synchronizer)
 	go func() {
 		if err := synchronizer.Run(ctx, logger); err != nil {
@@ -297,6 +334,52 @@ func runAgent(ctx context.Context, logger *log.Logger) error {
 	}()
 	logger.Printf("synchronization enabled server=%s device_id=%s", settings.ServerURL, settings.DeviceID)
 	return policyDaemon.Run(ctx, tickInterval, logger)
+}
+
+// localInterfaceRetryDelay is how long the agent waits before rebuilding the
+// named pipe after the interface stopped unexpectedly.
+const localInterfaceRetryDelay = 5 * time.Second
+
+// serveLocalInterface keeps the named pipe available for the lifetime of the
+// agent. Enforcement must keep running when the interface is down, so a failure
+// here is retried instead of ending the service: a running agent with no pipe
+// would leave the screen reporting the service as unavailable with no way back
+// other than a manual restart.
+func serveLocalInterface(ctx context.Context, service *windowsipc.Service, controlledUserSID string, logger *log.Logger) {
+	for {
+		listener, err := windowsipc.Listen(controlledUserSID)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			logger.Printf("local interface unavailable: %v", err)
+			if !sleepContext(ctx, localInterfaceRetryDelay) {
+				return
+			}
+			continue
+		}
+		err = service.Serve(ctx, listener)
+		if ctx.Err() != nil {
+			return
+		}
+		logger.Printf("local interface stopped: %v", err)
+		if !sleepContext(ctx, localInterfaceRetryDelay) {
+			return
+		}
+	}
+}
+
+// sleepContext waits for the delay and reports whether the wait completed instead
+// of the context being cancelled.
+func sleepContext(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 type serviceHandler struct{}

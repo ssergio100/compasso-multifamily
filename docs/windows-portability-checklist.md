@@ -36,7 +36,7 @@
         bloquear ao esgotar o tempo; retomar ao adicionar tempo; bloqueio
         manual; desbloqueio manual com senha na sessão; pausa da monitoração;
         pausa sem contagem de tempo.
-- [ ] Expor IPC local protegido e conectar **Adicionar tempo**; validar status,
+- [x] Expor IPC local protegido e conectar **Adicionar tempo**; validar status,
       senha correta/incorreta, rate limit e evento durável.
 - [ ] Conectar **Configurações** ao caminho privilegiado; validar conta, URL,
       credenciais, primeiro heartbeat e segredo não recuperável pela interface.

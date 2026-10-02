@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ssergio100/compasso/agent/localauth"
+	"github.com/ssergio100/compasso/agent/localmsg"
 	"github.com/ssergio100/compasso/agent/storage"
 )
 
@@ -113,7 +114,7 @@ func TestHumanSynchronizationDetailCoversActionableFailures(t *testing.T) {
 		{"unexpected local error", "configurações"},
 	}
 	for _, test := range tests {
-		if got := humanSynchronizationDetail(test.detail); !strings.Contains(got, test.want) {
+		if got := localmsg.SynchronizationDetail(test.detail); !strings.Contains(got, test.want) {
 			t.Errorf("detail %q mapped to %q, want %q", test.detail, got, test.want)
 		}
 	}

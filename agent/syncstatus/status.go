@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package syncstatus exchanges a small, root-only synchronization result
 // between the daemon and the privileged graphical configuration helper.
 package syncstatus

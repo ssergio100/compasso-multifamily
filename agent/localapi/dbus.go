@@ -5,12 +5,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
 	"github.com/ssergio100/compasso/agent/localauth"
+	"github.com/ssergio100/compasso/agent/localmsg"
+)
+
+// Local D-Bus error names kept for clients built against older packages. The
+// wording now lives in agent/localmsg so Linux and Windows stay identical.
+const (
+	ErrorPasswordNotConfigured = "Error.PasswordNotConfigured"
+	ErrorInvalidPassword       = "Error.InvalidPassword"
+	ErrorRateLimited           = "Error.RateLimited"
+	ErrorFailed                = "Error.Failed"
 )
 
 const (
@@ -66,34 +75,18 @@ func (a *bonusAPI) GetSynchronizationReport() (string, string, *dbus.Error) {
 	if source, ok := a.synchronization.(synchronizationReportSource); ok {
 		checked, online, detail = source.SynchronizationReport()
 	}
-	if !checked {
-		return "checking", "Aguardando a primeira resposta do servidor.", nil
-	}
-	if online {
-		return "online", "", nil
-	}
-	return "offline", humanSynchronizationDetail(detail), nil
+	status, human := localmsg.Report(synchronizationState(checked, online), detail)
+	return status, human, nil
 }
 
-func humanSynchronizationDetail(detail string) string {
-	lower := strings.ToLower(detail)
+func synchronizationState(checked, online bool) string {
 	switch {
-	case strings.Contains(lower, "http 400"):
-		return "O servidor recusou a sincronização (erro 400). O agente e o servidor podem estar em versões incompatíveis."
-	case strings.Contains(lower, "http 401"), strings.Contains(lower, "http 403"):
-		return "O servidor recusou a identificação deste computador. Revise o dispositivo e o token nas configurações."
-	case strings.Contains(lower, "local revision"), strings.Contains(lower, "http 409"):
-		return "O estado deste computador não corresponde ao cadastro atual do servidor. Revise a configuração do dispositivo."
-	case strings.Contains(lower, "update the compasso agent"), strings.Contains(lower, "http 426"):
-		return "Este agente precisa ser atualizado para continuar a comunicação com o servidor."
-	case strings.Contains(lower, "http 502"), strings.Contains(lower, "http 503"), strings.Contains(lower, "http 504"):
-		return "O servidor está temporariamente indisponível. O agente continuará tentando automaticamente."
-	case strings.Contains(lower, "lookup "), strings.Contains(lower, "no such host"), strings.Contains(lower, "server misbehaving"):
-		return "Não foi possível localizar o servidor na rede. Verifique a conexão e o endereço configurado."
-	case strings.Contains(lower, "deadline exceeded"), strings.Contains(lower, "timeout"):
-		return "O servidor demorou demais para responder. O agente continuará tentando automaticamente."
+	case !checked:
+		return localmsg.StatusChecking
+	case online:
+		return localmsg.StatusOnline
 	default:
-		return "A sincronização falhou. Abra as configurações do Compasso para revisar a comunicação."
+		return localmsg.StatusOffline
 	}
 }
 
@@ -104,18 +97,40 @@ func (a *bonusAPI) AddLocalBonus(password string, seconds uint32) (string, *dbus
 	defer cancel()
 	result, err := a.service.Grant(ctx, password, int64(seconds), a.now())
 	if err != nil {
-		switch {
-		case errors.Is(err, localauth.ErrPasswordNotConfigured):
-			return "", dbus.NewError(BusName+".Error.PasswordNotConfigured", []interface{}{"Nenhuma senha de administrador foi cadastrada."})
-		case errors.Is(err, localauth.ErrInvalidPassword):
-			return "", dbus.NewError(BusName+".Error.InvalidPassword", []interface{}{"Senha incorreta."})
-		case errors.Is(err, localauth.ErrRateLimited):
-			return "", dbus.NewError(BusName+".Error.RateLimited", []interface{}{"Aguarde antes de tentar novamente."})
-		default:
-			return "", dbus.NewError(BusName+".Error.Failed", []interface{}{"Não foi possível adicionar o tempo."})
-		}
+		code := localauthErrorCode(err)
+		return "", dbus.NewError(BusName+"."+dbusErrorName(code), []interface{}{localmsg.BonusError(code)})
 	}
 	return result.UUID, nil
+}
+
+// dbusErrorName preserves the historical D-Bus error names, which are part of
+// the Linux interface contract, while the wording comes from agent/localmsg.
+func dbusErrorName(code string) string {
+	switch code {
+	case localmsg.ErrorPasswordNotConfigured:
+		return ErrorPasswordNotConfigured
+	case localmsg.ErrorInvalidPassword:
+		return ErrorInvalidPassword
+	case localmsg.ErrorRateLimited:
+		return ErrorRateLimited
+	default:
+		return ErrorFailed
+	}
+}
+
+// localauthErrorCode maps the bonus service failures to the stable identifiers
+// shared with the Windows named pipe.
+func localauthErrorCode(err error) string {
+	switch {
+	case errors.Is(err, localauth.ErrPasswordNotConfigured):
+		return localmsg.ErrorPasswordNotConfigured
+	case errors.Is(err, localauth.ErrInvalidPassword):
+		return localmsg.ErrorInvalidPassword
+	case errors.Is(err, localauth.ErrRateLimited):
+		return localmsg.ErrorRateLimited
+	default:
+		return localmsg.ErrorFailed
+	}
 }
 
 // Server owns the system-bus connection and exported object.

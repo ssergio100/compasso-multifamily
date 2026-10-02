@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package setup implements the privileged, installation-time configuration of
 // tempo-agent. It deliberately keeps device credentials out of command-line
 // arguments and process listings.
