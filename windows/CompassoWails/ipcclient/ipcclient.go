@@ -25,6 +25,10 @@ const callTimeout = 15 * time.Second
 // pipe instance and creating the next one.
 const connectRetryWindow = 3 * time.Second
 
+// pipeName is replaceable by tests so an unavailable endpoint can be checked
+// without stopping the real service used by the installed interface.
+var pipeName = PipeName
+
 // Call performs one request and returns the service reply. A reply that reports
 // a business failure is returned as a Response with OK false, not as an error:
 // only transport problems are errors.
@@ -46,7 +50,7 @@ func Call(ctx context.Context, request Request) (Response, error) {
 
 // connect opens the pipe, retrying while the service rebuilds its instance.
 func connect(ctx context.Context) (windows.Handle, error) {
-	name, err := windows.UTF16PtrFromString(PipeName)
+	name, err := windows.UTF16PtrFromString(pipeName)
 	if err != nil {
 		return 0, err
 	}

@@ -6,6 +6,14 @@ export function AddTime(arg1, arg2) {
   return window['go']['main']['App']['AddTime'](arg1, arg2);
 }
 
+export function Configure(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['Configure'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function InitialView() {
+  return window['go']['main']['App']['InitialView']();
+}
+
 export function Ping() {
   return window['go']['main']['App']['Ping']();
 }
@@ -16,6 +24,10 @@ export function Settings() {
 
 export function Synchronization() {
   return window['go']['main']['App']['Synchronization']();
+}
+
+export function WindowsAccounts() {
+  return window['go']['main']['App']['WindowsAccounts']();
 }
 
 export function WindowsUser() {

@@ -4,10 +4,16 @@ import {main} from '../models';
 
 export function AddTime(arg1:string,arg2:number):Promise<main.AddTimeResult>;
 
+export function Configure(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:boolean):Promise<main.ConfigureResult>;
+
+export function InitialView():Promise<string>;
+
 export function Ping():Promise<boolean>;
 
 export function Settings():Promise<main.AgentSettings>;
 
 export function Synchronization():Promise<main.SyncState>;
+
+export function WindowsAccounts():Promise<Array<main.WindowsAccount>>;
 
 export function WindowsUser():Promise<string>;

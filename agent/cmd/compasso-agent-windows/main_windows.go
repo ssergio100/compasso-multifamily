@@ -51,6 +51,12 @@ func run(arguments []string) error {
 	if len(arguments) == 0 {
 		return svc.Run(serviceName, serviceHandler{})
 	}
+	if len(arguments) == 2 && strings.EqualFold(arguments[0], "configure-ui") {
+		return configureFromUI(arguments[1])
+	}
+	if len(arguments) == 2 && strings.EqualFold(arguments[0], "alert-ui") {
+		return alert.ShowWindowsAlert(arguments[1])
+	}
 	if len(arguments) == 2 && strings.EqualFold(arguments[0], "inspect-session") {
 		return inspectSession(arguments[1])
 	}
@@ -64,7 +70,7 @@ func run(arguments []string) error {
 		return configure(arguments[1], arguments[2], arguments[3])
 	}
 	if len(arguments) != 1 {
-		return errors.New("use: compasso-agent [install|uninstall|start|stop|console|service|configure <server-url> <device-id> <SID>]|inspect-session <SID>|lock-session <SID>")
+		return errors.New("use: compasso-agent [install|uninstall|start|start-if-configured|stop|console|service|configure <server-url> <device-id> <SID>|configure-ui <nonce>|alert-ui <message>]|inspect-session <SID>|lock-session <SID>")
 	}
 	switch strings.ToLower(arguments[0]) {
 	case "install":
@@ -73,6 +79,8 @@ func run(arguments []string) error {
 		return uninstallService()
 	case "start":
 		return startService()
+	case "start-if-configured":
+		return startServiceIfConfigured()
 	case "stop":
 		return stopService()
 	case "console":
@@ -224,6 +232,10 @@ func defaultDatabasePath() (string, error) {
 	return windowsservice.DefaultDatabasePath(os.Getenv("ProgramData"))
 }
 
+func defaultSetupMarkerPath() (string, error) {
+	return windowsservice.DefaultSetupMarkerPath(os.Getenv("ProgramData"))
+}
+
 func loadPublicConfiguration() (windowsservice.PublicConfiguration, error) {
 	path, err := defaultConfigurationPath()
 	if err != nil {
@@ -236,14 +248,11 @@ func loadPublicConfiguration() (windowsservice.PublicConfiguration, error) {
 	return settings.Public(), nil
 }
 
-type silentNotifier struct{}
-
-func (silentNotifier) Notify(context.Context, alert.Alert) error { return nil }
-
 // configurationSource publishes only the settings that are safe to show. The
 // device token is never exposed through the pipe.
 type configurationSource struct {
-	path string
+	path       string
+	markerPath string
 }
 
 func (source configurationSource) PublicConfiguration() (windowsipc.PublicSettings, bool) {
@@ -252,31 +261,33 @@ func (source configurationSource) PublicConfiguration() (windowsipc.PublicSettin
 		return windowsipc.PublicSettings{}, false
 	}
 	public := settings.Public()
-func (source configurationSource) UpdatePublicConfiguration(request windowsipc.UpdatePublicConfigurationRequest) error {
-	settings, err := windowsservice.LoadConfiguration(source.path)
+	configured, err := windowsservice.SetupConfirmed(source.markerPath)
 	if err != nil {
-		return err
+		configured = false
 	}
-	if request.ServerURL != "" {
-		settings.ServerURL = request.ServerURL
-	}
-	if request.DeviceID != "" {
-		settings.DeviceID = request.DeviceID
-	}
-	if request.ControlledUserSID != "" {
-		settings.ControlledUserSID = request.ControlledUserSID
-	}
-	if request.SetTokenWhenPresent && request.DeviceToken != "" {
-		settings.DeviceToken = request.DeviceToken
-	}
-	return windowsservice.SaveConfiguration(source.path, settings)
+	return windowsipc.PublicSettings{
+		ServerURL:         public.ServerURL,
+		DeviceID:          public.DeviceID,
+		ControlledUserSID: public.ControlledUserSID,
+		HasDeviceToken:    public.HasDeviceToken,
+		Configured:        configured,
+	}, true
 }
+
 func runAgent(ctx context.Context, logger *log.Logger) error {
 	configPath, err := defaultConfigurationPath()
 	if err != nil {
 		return err
 	}
 	settings, err := windowsservice.LoadConfiguration(configPath)
+	if err != nil {
+		return err
+	}
+	markerPath, err := defaultSetupMarkerPath()
+	if err != nil {
+		return err
+	}
+	setupConfirmedAtStartup, err := windowsservice.SetupConfirmed(markerPath)
 	if err != nil {
 		return err
 	}
@@ -306,7 +317,7 @@ func runAgent(ctx context.Context, logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
-	policyDaemon.SetAlertNotifier(silentNotifier{})
+	policyDaemon.SetAlertNotifier(alert.NewWindowsNotifier())
 	logger.Printf("starting controlled_user_sid=%s database=%s", settings.ControlledUserSID, databasePath)
 
 	synchronizer, err := syncclient.New(store, &http.Client{Timeout: httpTimeout}, syncclient.Config{
@@ -322,7 +333,7 @@ func runAgent(ctx context.Context, logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
-	ipcService := windowsipc.NewService(localBonus, synchronizer, configurationSource{path: configPath})
+	ipcService := windowsipc.NewService(localBonus, synchronizer, configurationSource{path: configPath, markerPath: markerPath})
 	go serveLocalInterface(ctx, ipcService, settings.ControlledUserSID, logger)
 	logger.Printf("local interface ready pipe=%s", windowsipc.PipeName)
 
@@ -333,7 +344,29 @@ func runAgent(ctx context.Context, logger *log.Logger) error {
 		}
 	}()
 	logger.Printf("synchronization enabled server=%s device_id=%s", settings.ServerURL, settings.DeviceID)
+	if !setupConfirmedAtStartup {
+		logger.Printf("awaiting setup confirmation; policy enforcement disabled")
+		if !waitForSetupConfirmation(ctx, markerPath, 200*time.Millisecond) {
+			return nil
+		}
+		logger.Printf("setup confirmed; policy enforcement enabled")
+	}
 	return policyDaemon.Run(ctx, tickInterval, logger)
+}
+
+func waitForSetupConfirmation(ctx context.Context, path string, interval time.Duration) bool {
+	if interval <= 0 {
+		interval = 200 * time.Millisecond
+	}
+	for {
+		confirmed, err := windowsservice.SetupConfirmed(path)
+		if err == nil && confirmed {
+			return true
+		}
+		if !sleepContext(ctx, interval) {
+			return false
+		}
+	}
 }
 
 // localInterfaceRetryDelay is how long the agent waits before rebuilding the
@@ -468,8 +501,14 @@ func installService() error {
 	}
 	defer manager.Disconnect()
 
+	startType := uint32(mgr.StartManual)
+	if path, pathErr := defaultConfigurationPath(); pathErr == nil {
+		if _, loadErr := windowsservice.LoadConfiguration(path); loadErr == nil {
+			startType = mgr.StartAutomatic
+		}
+	}
 	configuration := mgr.Config{
-		StartType:        mgr.StartAutomatic,
+		StartType:        startType,
 		ErrorControl:     mgr.ErrorNormal,
 		DisplayName:      serviceDisplayName,
 		Description:      serviceDescription,
@@ -555,6 +594,19 @@ func startService() error {
 		return fmt.Errorf("start Windows service: %w", err)
 	}
 	return waitForServiceState(service, svc.Running, 15*time.Second)
+}
+
+func startServiceIfConfigured() error {
+	path, err := defaultConfigurationPath()
+	if err != nil {
+		return err
+	}
+	if _, err := windowsservice.LoadConfiguration(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("read Windows configuration before starting service: %w", err)
+	}
+	return startService()
 }
 
 func stopService() error {

@@ -1,5 +1,6 @@
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type @"
@@ -20,6 +21,8 @@ public static class CompassoWailsNative {
 
 $base = 'C:\CompassoWinUIBootstrap'
 $resultPath = Join-Path $base 'wails-ui-result.txt'
+$stdoutPath = Join-Path $base 'wails-ui-stdout.txt'
+$stderrPath = Join-Path $base 'wails-ui-stderr.txt'
 
 function Find-ByName($root, [string]$name) {
     $elements = $root.FindAll(
@@ -33,6 +36,29 @@ function Find-ByName($root, [string]$name) {
         }
     }
     return $null
+}
+
+function Find-ExactName($root, [string]$name) {
+    $condition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::NameProperty,
+        $name)
+    return $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+}
+
+function Invoke-ByName($root, [string]$name) {
+    $element = Find-ByName $root $name
+    if ($null -eq $element) { throw "Controle '$name' não encontrado." }
+    $pattern = $element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    if ($null -eq $pattern) { throw "Controle '$name' não pode ser acionado." }
+    $pattern.Invoke()
+    Start-Sleep -Milliseconds 900
+}
+
+function Find-AllByControlType($root, $controlType) {
+    $condition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        $controlType)
+    return $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
 }
 
 function Capture-Window([IntPtr]$handle, [string]$path) {
@@ -66,7 +92,9 @@ function Click-Relative([IntPtr]$handle, [int]$x, [int]$y) {
 
 try {
     Get-Process Compasso -ErrorAction SilentlyContinue | Stop-Process -Force
-    $process = Start-Process 'C:\Program Files\Compasso\Compasso.exe' -PassThru
+    Remove-Item $stdoutPath,$stderrPath -ErrorAction SilentlyContinue
+    $process = Start-Process 'C:\Program Files\Compasso\Compasso.exe' -PassThru `
+        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     Start-Sleep -Seconds 6
     $script:window = [IntPtr]::Zero
     $callback = [CompassoWailsNative+EnumWindowsProc]{
@@ -85,8 +113,11 @@ try {
     Capture-Window $script:window (Join-Path $base 'wails-add-time.png')
     Click-Relative $script:window 500 320
     Capture-Window $script:window (Join-Path $base 'wails-add-time-60.png')
-    Click-Relative $script:window 150 665
-    Start-Sleep -Seconds 2
+    [void][CompassoWailsNative]::SetForegroundWindow($script:window)
+    [System.Windows.Forms.SendKeys]::SendWait('{END}')
+    Start-Sleep -Milliseconds 250
+    Click-Relative $script:window 150 850
+    Start-Sleep -Milliseconds 900
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
     Capture-Window $script:window (Join-Path $base 'wails-settings.png')
     @('WAILS_WINDOW=PASS','ADD_TIME_CONTROLS=PASS','SETTINGS_CONTROLS=PASS') |
@@ -94,6 +125,8 @@ try {
 }
 catch {
     $details = @('WAILS_UI=FAIL', "ERROR=$($_.Exception.Message)")
+    $details += Get-Content $stdoutPath,$stderrPath -ErrorAction SilentlyContinue |
+        ForEach-Object { "APP_OUTPUT=$_" }
     if ($null -ne $root) {
         $details += $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
             ForEach-Object { "ELEMENT=$($_.Current.ControlType.ProgrammaticName)|$($_.Current.Name)" }

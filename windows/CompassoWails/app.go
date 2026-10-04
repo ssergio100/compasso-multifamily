@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/user"
 	"strings"
 
@@ -22,6 +23,17 @@ func NewApp() *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+}
+
+// InitialView opens the setup screen after a fresh install while preserving
+// the normal Add time entry point for Start menu and desktop shortcuts.
+func (a *App) InitialView() string {
+	for _, argument := range os.Args[1:] {
+		if strings.EqualFold(argument, "--settings") {
+			return "settings"
+		}
+	}
+	return "add"
 }
 
 // WindowsUser returns the account shown by the settings screen.
@@ -51,9 +63,9 @@ type AddTimeResult struct {
 // screen can explain what happened.
 func (a *App) AddTime(password string, minutes int) AddTimeResult {
 	if strings.TrimSpace(password) == "" {
-		return AddTimeResult{OK: false, ErrorCode: "invalid_request", Message: "Digite a senha do responsável."}
+		return AddTimeResult{OK: false, ErrorCode: "invalid_request", Message: "Informe a senha do responsável."}
 	}
-	if minutes <= 0 {
+	if minutes != 15 && minutes != 30 && minutes != 60 && minutes != 120 {
 		return AddTimeResult{OK: false, ErrorCode: "invalid_request", Message: "Escolha um período válido."}
 	}
 	response, err := ipcclient.Call(a.ctx, ipcclient.Request{
@@ -62,17 +74,24 @@ func (a *App) AddTime(password string, minutes int) AddTimeResult {
 		Seconds:   int64(minutes) * 60,
 	})
 	if err != nil {
-		return AddTimeResult{OK: false, ErrorCode: "unavailable", Message: err.Error()}
+		return AddTimeResult{
+			OK: false, ErrorCode: "unavailable",
+			Message: "O serviço Compasso está indisponível. Abra as configurações para revisar a configuração.",
+		}
 	}
 	if !response.OK {
 		return AddTimeResult{OK: false, ErrorCode: response.ErrorCode, Message: response.Message}
 	}
-	result := AddTimeResult{OK: true, EventUUID: response.EventUUID, Message: "Tempo adicionado."}
-	if response.Grant != nil {
-		result.BonusSeconds = response.Grant.BonusSeconds
-		result.TotalSeconds = response.Grant.TotalSeconds
+	if response.EventUUID == "" || response.Grant == nil || response.Grant.UUID != response.EventUUID {
+		return AddTimeResult{
+			OK: false, ErrorCode: "failed",
+			Message: "O agente retornou uma resposta inválida.",
+		}
 	}
-	return result
+	return AddTimeResult{
+		OK: true, EventUUID: response.EventUUID, Message: "Tempo adicionado.",
+		BonusSeconds: response.Grant.BonusSeconds, TotalSeconds: response.Grant.TotalSeconds,
+	}
 }
 
 // SyncState describes the agent connection for the header indicator.
@@ -92,17 +111,22 @@ func (a *App) Synchronization() SyncState {
 		return SyncState{Status: "unavailable", Detail: "Serviço do Compasso não está em execução."}
 	}
 	if !response.OK {
-		return SyncState{Status: "unavailable", Detail: response.Message}
+		return SyncState{Status: "unavailable", Detail: "Serviço do Compasso indisponível."}
 	}
 	online := response.Status == "online"
-	state := SyncState{Available: true, Online: online, Status: response.Status}
+	state := SyncState{Available: true, Online: online, Status: response.Status, Detail: response.Detail}
 	switch response.Status {
 	case "online":
-		state.Detail = "Servidor conectado"
+		state.Detail = ""
 	case "checking":
-		state.Detail = "Verificando servidor"
+		if state.Detail == "" {
+			state.Detail = "Aguardando a primeira resposta do servidor."
+		}
 	default:
-		state.Detail = "Servidor indisponível"
+		state.Status = "offline"
+		if state.Detail == "" {
+			state.Detail = "A comunicação com o servidor falhou. Abra as configurações para revisar a configuração."
+		}
 	}
 	return state
 }

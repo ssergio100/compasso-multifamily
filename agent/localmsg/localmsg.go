@@ -32,7 +32,7 @@ const WaitingForFirstResponse = "Aguardando a primeira resposta do servidor."
 const GenericSynchronizationFailure = "A sincronização falhou. Abra as configurações do Compasso para revisar a comunicação."
 
 // ForBonusFailure is shown when the local bonus could not be stored.
-const ForBonusFailure = "Não foi possível adicionar o tempo."
+const ForBonusFailure = "Não foi possível adicionar o tempo. Verifique se o Compasso está ativo."
 
 // StatusLabel renders the short connection line used by the interface.
 func StatusLabel(state string) string {
@@ -87,11 +87,11 @@ func Report(state, rawDetail string) (string, string) {
 func BonusError(code string) string {
 	switch code {
 	case ErrorPasswordNotConfigured:
-		return "Nenhuma senha de administrador foi cadastrada."
+		return "Nenhuma senha de administrador foi cadastrada para este dispositivo. Cadastre uma senha no painel do Compasso."
 	case ErrorInvalidPassword:
 		return "Senha incorreta."
 	case ErrorRateLimited:
-		return "Aguarde antes de tentar novamente."
+		return "Muitas tentativas. Aguarde um pouco e tente novamente."
 	case ErrorInvalidRequest:
 		return "O período escolhido não é válido."
 	default:

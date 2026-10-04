@@ -1682,7 +1682,8 @@ privilegiada de bônus com senha, incluindo rate limit e evento durável.
 ## Item 5 — IPC local protegido e Adicionar tempo
 
 Servidor (`agent/windowsipc`), cliente (`windows/CompassoWails/ipcclient`) e
-tela **Adicionar tempo** ligados de ponta a ponta. Pipe em
+ligações da tela **Adicionar tempo** implementados. Isso ainda não constitui
+validação de ponta a ponta pela interface Wails real. Pipe em
 `\\.\pipe\CompassoAgent`, enquadramento `uint32` little-endian + JSON, limite de
 64 KiB, uma requisição por conexão.
 
@@ -1727,7 +1728,7 @@ SCM seguia `Running` com um binário antigo, e nada no log indicava falta de pip
 - `serveLocalInterface` reconstrói o pipe se a interface parar, sem reiniciar o
   serviço. A política e o bloqueio continuam ativos enquanto a interface cai.
 
-### Validação na VM
+### Validação técnica na VM (parcial)
 
 - `ping` 10/10 sequenciais; suíte e2e com 12 requisições e operações
   intercaladas; cliente com 15 requisições.
@@ -1743,6 +1744,26 @@ por taxa. Não é: `localauth` conta apenas tentativas **falhadas**. Registrado
 como teste em `agent/localauth/service_test.go`
 (`TestSuccessfulGrantIsNotRateLimited`), porque é a diferença entre proteger
 contra tentativa repetida e travar o usuário legítimo.
+
+### Limite da evidência e reabertura — 2026-10-02
+
+A evidência acima exercitou requisições IPC, o cliente e o estado persistido no
+banco, mas não registrou os cenários acionados pela tela real da interface
+vigente `windows/CompassoWails`. A afirmação anterior de ligação "de ponta a
+ponta" era, portanto, mais forte que a evidência disponível. O item 5 permanece
+parcial e foi reaberto no checklist.
+
+Depois da reabertura, a interface vigente foi ligada ao serviço, incorporada ao
+instalador e exercitada instalada na VM. Foram confirmados pela tela o estado do
+serviço, a escolha do período, a senha incorreta, o rate limit, o serviço
+indisponível e a limpeza da senha. A interface só aceita sucesso quando a
+resposta contém o evento e o bônus persistidos com UUID correspondente, usando
+o mesmo motor local do Linux.
+
+O item 5 continua parcial porque a validação de aceite ainda não foi encerrada.
+A única pendência é de **testes**, incluindo executar pela interface instalada o
+sucesso com a senha real e conferir o bônus, o evento e o saldo persistidos. Não
+há lacuna funcional conhecida nem impedimento para iniciar o item 6.
 
 ### Divergência conhecida
 
@@ -1836,8 +1857,222 @@ Regra do agente: como vet e testes rodam no Linux com build tags, `agent/session
 e `agent/windowsipc` só são exercitados no Windows. Build e testes Windows devem
 ser executados na VM para cobrir esses arquivos.
 
-### Próximo passo
+## Item 6 — Configurações funcional e instalador atualizado — 2026-10-03
 
-Item 6: conectar **Configurações** ao caminho privilegiado do serviço —
-seleção de conta e SID, URL, credenciais, gravação com DPAPI, início do
-serviço e primeiro heartbeat, sem que o token seja recuperável pela interface.
+O escopo vigente foi confirmado antes da alteração: a interface Windows é
+`windows/CompassoWails`. Os projetos WinUI históricos `windows/CompassoApp` e
+`windows/CompassoInstaller` não receberam cópia da implementação. A referência
+funcional foi o assistente Linux em `local-ui/configure_agent.py` e o helper
+privilegiado `agent/cmd/tempo-agent-configure`.
+
+### Fluxo entregue
+
+- A tela enumera contas locais normais e habilitadas, põe a conta corrente
+  primeiro e mantém nome + SID. Trocar a conta invalida a confirmação anterior.
+- A interface valida origem HTTP(S), exige HTTPS fora de loopback e exige
+  identificador, token e confirmação explícita da conta.
+- `Configure` cria um pipe de uso único, com nonce aleatório e DACL limitada a
+  administradores/SYSTEM, e abre o próprio agente instalado com `runas`.
+  Token, identificador e URL não entram em argumentos do processo.
+- O helper elevado revalida de forma autoritativa a relação nome/SID e confirma
+  que a conta é local, comum e habilitada. A configuração é gravada com DPAPI e
+  ACL já usadas pelo serviço Windows.
+- Antes de cada tentativa, `setup-complete` é removido. O serviço é configurado
+  como automático, reiniciado e consultado pelo IPC por até 30 segundos. O
+  marco durável só é escrito depois de um heartbeat `online`; 401/403 são
+  apresentados como credencial recusada. O token é esvaziado na tela em todo
+  resultado e nunca volta pelo IPC público.
+- Quando existe configuração, mas ainda não existe o marco, sincronização e IPC
+  ficam disponíveis para concluir o assistente, porém o daemon de política não
+  inicia. Isso impede bloqueio antes da primeira configuração confirmada.
+- A abertura `--settings` usada pelo instalador inicia diretamente a tela de
+  configuração. O estado de serviço/servidor e o estado configurado são
+  atualizados continuamente, inclusive se o serviço ainda estava subindo na
+  primeira leitura.
+
+### Instalador
+
+`windows/build-portable-installer.ps1` agora recompila o serviço e o Wails antes
+de montar o artefato. `CompassoSetup.iss` instala `CompassoAgent.exe`, registra
+o serviço, inicia-o somente se já houver configuração e abre Configurações para
+o usuário original depois de uma instalação interativa. A desinstalação para e
+remove o serviço.
+
+Durante o teste de atualização foi encontrada uma falha concreta: a limpeza
+antecipada de `{app}` podia apagar arquivos antes de uma atualização terminar,
+e o Restart Manager não conseguia fechar o Wails quando instalador e aplicação
+estavam em sessões interativas diferentes. A limpeza destrutiva foi removida e
+`PrepareToInstall` agora fecha `Compasso.exe` explicitamente antes de parar o
+serviço. A atualização com a interface aberta passou depois da correção.
+
+### Evidência na VM Windows 11
+
+- `windows/test-agent.ps1`: doze pacotes do agente verdes, incluindo helper,
+  `windowsipc` e `windowsservice`.
+- `go test ./...` em `windows/CompassoWails`: módulo principal e cliente IPC
+  verdes.
+- Testes do helper cobrem nonce, conta local corrente, resposta sem token,
+  mensagens sanitizadas, primeiro heartbeat aceito e rejeição de credenciais.
+- Fluxo real instalado: conta `Sergio`, confirmação, credencial válida, UAC,
+  gravação, reinício do serviço, heartbeat, `setup-complete` e mensagem de
+  sucesso. Na captura posterior o chip está **Configurado**, o servidor está
+  **conectado** e o campo de token está vazio.
+- Reinício do serviço seguido por `go test -count=1 -v ./ipcclient`: ping,
+  sincronização, configuração pública sem token, requisições repetidas, erro de
+  senha e indisponibilidade passaram.
+- Atualização silenciosa com `Compasso.exe` aberto: exit code `0`, serviço
+  `Running`, configuração preservada e binários presentes.
+- Ciclo final do instalador: serviço removido na desinstalação; app, agente e
+  atalhos removidos; reinstalação com serviço `Running`/`Auto`; cinco arquivos
+  instalados e nenhum runtime .NET embutido.
+
+Artefato final: `windows/artifacts/CompassoSetup.exe`, 11.417.231 bytes,
+SHA-256 `CE240B582B1F8DCBC03AA705FAE83C67123B739A2303AA67AF75BE8572B166C0`.
+
+O item 6 está concluído. O item 7 permanece aberto porque seu critério exige um
+aceite adicional em VM realmente limpa e reinício completo do Windows, embora
+inclusão no instalador, atualização e remoção do serviço já tenham sido
+exercitadas.
+
+## Retomada do item 7 — aceite do novo instalador — 2026-10-03
+
+O usuário confirmou que a entrega principal desta etapa é o novo instalador.
+A tela de Configurações permanece como dependência já implementada e não será
+redesenhada. A única interface vigente continua sendo
+`windows/CompassoWails`; os projetos WinUI históricos permanecem fora do
+escopo.
+
+Estado autoritativo observado antes do aceite: a VM `win11` está ativa, a
+instalação e o desinstalador existem, `%ProgramData%\Compasso` contém
+configuração e `setup-complete`, e o serviço `CompassoAgent` está `Running`
+com início automático. Esse estado confirma a instalação atual, mas não serve
+como evidência de primeira instalação limpa.
+
+Objetivo da etapa longa: reconstruir o artefato vigente, preservar o estado
+atual por um mecanismo recuperável e executar em uma VM sem instalação nem
+configuração preexistentes o ciclo instalar → configurar → reiniciar o
+Windows → atualizar → desinstalar. O aceite deve verificar serviço,
+atalhos, binários, estado durável e ausência de resíduo executável, sem expor
+ou tentar recuperar o token protegido.
+
+### Build e primeira instalação limpa
+
+- O espelho da VM foi conferido por SHA-256 contra os arquivos críticos do
+  worktree. Serviço, Wails e Inno Setup foram reconstruídos pelo fluxo canônico.
+  Artefato: 11.417.231 bytes, SHA-256
+  `A7D1B721E5A1D77B44F161C5EE3A20B898834435F7996B2E24E763D4C58E8601`.
+- Testes Windows: treze pacotes do agente e os pacotes `Compasso` e
+  `Compasso/ipcclient` verdes. Os pacotes compartilhados do agente e protocolo
+  também passaram no Linux. O Go local não aceita a versão `1.25.0` declarada
+  pelo módulo Wails; a suíte correspondente passou com Go 1.27 na VM.
+- Foi criado o snapshot offline `pre-clean-installer-20261003`. A instalação
+  anterior foi removida e `%ProgramData%\Compasso` foi movido para
+  `C:\ProgramData\Compasso.acceptance-20261003-143239`, sem tentar ler o token
+  protegido.
+- `windows/verify-wails-clean-install.ps1` registrou
+  `CLEAN_PRECONDITION=PASS` e `CLEAN_INSTALL=PASS`: interface, agente,
+  desinstalador e atalhos presentes; binários instalados idênticos à build;
+  nenhum runtime .NET, configuração ou `setup-complete` herdado.
+- A primeira asserção esperava início automático antes da configuração. A
+  comparação com `tempo-agent-configure` mostrou que o Linux só habilita o
+  serviço depois de receber a configuração. O estado Windows medido,
+  `Manual`/`Stopped`, é deliberado; o verificador e o contrato foram corrigidos
+  para exigir `Auto`/`Running` depois da configuração.
+
+Próximo passo: entrar na sessão gráfica da VM, configurar a instalação limpa
+pela interface vigente com uma credencial real e continuar as fases
+`configured`, `post-reboot`, `update` e `uninstall` do verificador.
+
+## Diagnóstico de desinstalação e persistência — 2026-10-03
+
+Diagnóstico solicitado sem aplicar correção. Depois dos ciclos manuais, o
+estado autoritativo da VM era: serviço `CompassoAgent` ausente, nenhum processo
+Compasso ativo, registro de desinstalação ausente e somente
+`C:\Program Files\Compasso\Compasso.exe` restante na pasta do produto. Isso
+isola o resíduo executável da interface que estava aberta durante a
+desinstalação; o serviço foi removido corretamente.
+
+### Processo que mantém o executável bloqueado
+
+O instalador vigente encerra `Compasso.exe` explicitamente apenas em
+`PrepareToInstall`, portanto no caminho de instalação/atualização. O caminho
+de desinstalação executa somente `CompassoAgent.exe uninstall`, aguarda a
+remoção do serviço e tenta apagar `{app}`. Não existe hoje uma etapa explícita
+para encerrar e aguardar a interface Wails durante o uninstall. Com a interface
+aberta, o próprio processo `Compasso.exe` mantém sua imagem mapeada; a pasta é
+removida parcialmente e esse arquivo permanece.
+
+Os executáveis/processos relevantes são: `Compasso.exe` (interface),
+`CompassoAgent.exe service` (serviço) e, transitoriamente,
+`CompassoAgent.exe configure-ui <nonce>` (helper elevado). O WebView2 também
+cria processos `msedgewebview2.exe`, mas a evidência desta falha é o processo
+principal aberto e o único resíduo foi sua própria imagem. O serviço já é
+parado e removido pelo comando de uninstall.
+
+### Origem exata da configuração e identidade
+
+O desinstalador vigente remove `{app}`, atalhos, serviço e registro de
+desinstalação, mas não referencia `%ProgramData%\Compasso`. O estado preservado
+medido na VM foi:
+
+- `agent-config.json`: URL, `device_id`, SID da conta controlada e token
+  protegido por DPAPI de máquina (`device_token_dpapi` presente, sem revelar o
+  valor);
+- `agent.db` e seus arquivos WAL/SHM: política, uso, filas e a inscrição local;
+  a linha de enrollment preserva URL, `device_id`, UUID de instalação de 36
+  caracteres e impressão SHA-256 do token de 64 caracteres;
+- `setup-complete`: confirmação durável `configured`;
+- `service-state.json`: último estado de ciclo de vida do serviço.
+
+Na reinstalação, `installService` encontra `agent-config.json`, registra o
+serviço como automático e `start-if-configured` o inicia. O agente abre o mesmo
+`agent.db`, reaproveita a identidade da mesma combinação servidor/dispositivo/
+impressão do token e envia ao servidor o mesmo `device_id`, token e
+`installation_id`. O servidor apenas autentica esses valores e recusa um UUID
+de instalação divergente; não há reconhecimento automático por hardware,
+Windows, MAC ou nome da máquina.
+
+Em perfil de usuário existem `AppData\Roaming\Compasso.exe`, usado pelo perfil
+WebView2, e `AppData\Local\Compasso\startup.log`, originado pela implementação
+WinUI histórica. A interface Wails vigente não usa `localStorage` para a
+configuração e sempre consulta o serviço por IPC. Nenhuma chave Compasso foi
+encontrada nas raízes de software HKCU/HKLM depois do uninstall.
+
+### Origem de `Compasso.new`
+
+`C:\Program Files\Compasso.new` é criada exclusivamente pelo
+`InstallPlanExecutor` de `windows/CompassoInstaller`, o instalador WinUI
+histórico: ele monta a árvore nova nesse diretório, move a instalação anterior
+para `.previous` e ativa a nova árvore. `CompassoSetup.iss`, vigente, não cria
+nem referencia `.new`. A pasta observada era resíduo de uma execução histórica
+e sua remoção não poderia alterar a configuração em ProgramData.
+
+### Decisão de produto ainda necessária
+
+A política implementada hoje é **preservar configuração, identidade e estado
+local no uninstall**, o que explica a reconexão automática depois de reinstalar.
+Ainda deve ser decidido se o produto manterá essa política, removerá todo o
+estado local, ou oferecerá uma escolha explícita entre desinstalação comum e
+remoção completa. Nenhuma dessas alternativas foi implementada nesta etapa.
+
+## Correção do uninstall completo — 2026-10-03
+
+A política definida passou a ser remoção completa no uninstall. O instalador
+vigente executa `taskkill /F /T /IM Compasso.exe` de forma síncrona antes de
+remover o serviço e inclui `C:\ProgramData\Compasso` em `UninstallDelete`.
+Instalação, atualização e reparo não removem esse diretório.
+
+Validação localizada na VM Windows:
+
+- instalação por cima de uma configuração existente preservou integralmente
+  os hashes de `agent-config.json` e `setup-complete`, além do mesmo
+  `device_id`; o serviço permaneceu em execução;
+- com `Compasso.exe` aberto na sessão interativa, o uninstall terminou com
+  código 0, encerrou o processo e não deixou `Compasso.exe`, diretório de
+  instalação, serviço ou `C:\ProgramData\Compasso`;
+- a instalação seguinte não encontrou `agent-config.json` nem
+  `setup-complete` e registrou o serviço como `Manual`/`Stopped`, confirmando o
+  retorno ao estado inicial de configuração.
+
+O artefato regenerado tem 11.418.468 bytes e SHA-256
+`FA1FE4E30C1417FF7CC94CC7BF9D1D66722848E7ED61B6D59ACB3C38CA2C7E84`.

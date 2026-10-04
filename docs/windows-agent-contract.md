@@ -103,11 +103,14 @@ administradores; o token deve ser protegido pelo Windows e nunca ser devolvido
 
 ## Inicialização e perda de comunicação
 
-O serviço deve iniciar automaticamente com o Windows. Sem configuração
-completa, ou antes da confirmação do primeiro heartbeat durante a configuração,
-ele permanece ativo mas não aplica bloqueios. Ao salvar uma configuração, deve
-validar conta, URL e credenciais, iniciar/reiniciar a sincronização e só marcar
-o setup como concluído depois de uma resposta válida do servidor.
+Antes da primeira configuração, o serviço fica registrado com início manual e
+parado, como no fluxo Linux que só habilita o serviço depois de receber a
+configuração. Ao salvar uma configuração, deve validar conta, URL e credenciais,
+iniciar/reiniciar a sincronização e só marcar o setup como concluído depois de
+uma resposta válida do servidor. Depois dessa confirmação, o serviço deve ficar
+automático e iniciar com o Windows. Enquanto existe configuração sem o marco
+de confirmação, sincronização e IPC podem funcionar para concluir o assistente,
+mas a política não deve ser aplicada.
 
 Falhas de rede e `5xx` usam backoff exponencial até 5 minutos. `429` respeita
 `Retry-After` entre 5 segundos e 1 hora. Credenciais inválidas, família

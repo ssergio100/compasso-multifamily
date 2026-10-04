@@ -15,8 +15,7 @@ const (
 	OperationAddLocalBonus       Operation = "add_local_bonus"
 	OperationSynchronization     Operation = "get_synchronization_report"
 	OperationPing                Operation = "ping"
-	OperationPublicConfiguration       Operation = "get_public_configuration"
-	OperationUpdatePublicConfiguration Operation = "update_public_configuration"
+	OperationPublicConfiguration Operation = "get_public_configuration"
 )
 
 // PipeName is the machine-local named pipe used by the Compasso interface.
@@ -28,14 +27,6 @@ type Request struct {
 	Operation Operation `json:"operation"`
 	Password  string    `json:"password,omitempty"`
 	Seconds   int64     `json:"seconds,omitempty"`
-	ServerURL string    `json:"server_url,omitempty"`
-	DeviceID  string    `json:"device_id,omitempty"`
-	SID       string    `json:"sid,omitempty"`
-	// SetTokenWhenPresent instructs the service to persist the device token
-	// if a non-empty value is provided. The token must never be returned via
-	// the pipe.
-	SetTokenWhenPresent bool   `json:"set_token_when_present,omitempty"`
-	DeviceToken         string `json:"device_token,omitempty"`
 }
 
 // Response is the framed reply. Detail and Message carry the human wording from

@@ -9,6 +9,7 @@ $goExe = Join-Path $env:ProgramFiles 'Go\bin\go.exe'
 $nodeDirectory = Join-Path $env:ProgramFiles 'nodejs'
 $wailsIcon = Join-Path $wailsProject 'build\appicon.png'
 $compiledApp = Join-Path $wailsProject 'build\bin\Compasso.exe'
+$compiledAgent = Join-Path $PSScriptRoot 'build\agent\CompassoAgent.exe'
 $artifactDirectory = Join-Path $PSScriptRoot 'artifacts'
 $artifact = Join-Path $artifactDirectory 'CompassoSetup.exe'
 $setupScript = Join-Path $PSScriptRoot 'CompassoSetup.iss'
@@ -24,6 +25,9 @@ foreach ($required in @($wailsExe, $goExe, $wailsIcon, $setupScript)) {
 }
 if (-not $iscc) { throw 'Inno Setup 6 não encontrado.' }
 
+& (Join-Path $PSScriptRoot 'build-agent-service.ps1') -OutputPath $compiledAgent
+if ($LASTEXITCODE -ne 0) { throw "A build do serviço falhou com código $LASTEXITCODE." }
+
 $env:Path = "$(Split-Path $goExe);$nodeDirectory;$(Split-Path $wailsExe);$env:Path"
 
 Push-Location $wailsProject
@@ -36,11 +40,12 @@ finally {
 }
 
 if (-not (Test-Path $compiledApp)) { throw "Executável Wails ausente: $compiledApp" }
+if (-not (Test-Path $compiledAgent)) { throw "Executável do serviço ausente: $compiledAgent" }
 if (Test-Path $artifactDirectory) { Remove-Item $artifactDirectory -Recurse -Force }
 New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
 
 $generatedIcon = Join-Path $wailsProject 'build\windows\icon.ico'
-& $iscc "/DSourceExe=$compiledApp" "/DSetupIcon=$generatedIcon" `
+& $iscc "/DSourceExe=$compiledApp" "/DSourceAgent=$compiledAgent" "/DSetupIcon=$generatedIcon" `
     "/DOutputDir=$artifactDirectory" "/DMyAppVersion=$Version" $setupScript
 if ($LASTEXITCODE -ne 0) { throw "A geração do instalador falhou com código $LASTEXITCODE." }
 if (-not (Test-Path $artifact)) { throw "Executável final ausente: $artifact" }
@@ -51,8 +56,10 @@ if ($rootFiles.Count -ne 1 -or $rootFiles[0].Name -ne 'CompassoSetup.exe') {
 }
 
 $appSize = (Get-Item $compiledApp).Length
+$agentSize = (Get-Item $compiledAgent).Length
 $setupSize = (Get-Item $artifact).Length
 $hash = (Get-FileHash $artifact -Algorithm SHA256).Hash
 Write-Host "Executável Wails embutido: $compiledApp ($appSize bytes)"
+Write-Host "Serviço embutido: $compiledAgent ($agentSize bytes)"
 Write-Host "Artefato único: $artifact ($setupSize bytes)"
 Write-Host "SHA-256: $hash"

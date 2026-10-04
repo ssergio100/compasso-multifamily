@@ -1,4 +1,4 @@
-@media (max-height: 820px) {
+@media (max-height: 920px) {
   .settings-content { padding-block: 14px 12px; }
   .brand-large { display: grid; gap: 0; margin-bottom: 8px; }
   .brand-large img { width: 44px; height: 44px; }
@@ -19,3 +19,26 @@
   .save-button { height: 46px; }
   .back-button { padding-block: 7px; }
 }
+
+.connection { align-items: flex-start; font-weight: 400; }
+.connection > span { flex: 0 0 auto; margin-top: 2px; }
+.connection strong { display: block; font-weight: 650; }
+.connection small {
+  display: block;
+  max-width: 650px;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.35;
+}
+.add-button:disabled { cursor: not-allowed; }
+.save-button:disabled { cursor: not-allowed; opacity: .65; }
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear { display: none; }
+.settings-connection .connection {
+  justify-content: center;
+  margin: -10px 0 18px;
+  font-size: 15px;
+}
+.settings-connection .connection > span { width: 16px; height: 16px; }
+.settings-connection .connection small { font-size: 13px; text-align: left; }

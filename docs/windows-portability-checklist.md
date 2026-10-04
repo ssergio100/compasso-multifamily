@@ -36,13 +36,47 @@
         bloquear ao esgotar o tempo; retomar ao adicionar tempo; bloqueio
         manual; desbloqueio manual com senha na sessão; pausa da monitoração;
         pausa sem contagem de tempo.
-- [x] Expor IPC local protegido e conectar **Adicionar tempo**; validar status,
-      senha correta/incorreta, rate limit e evento durável.
-- [ ] Conectar **Configurações** ao caminho privilegiado; validar conta, URL,
+- [ ] Expor IPC local protegido e conectar **Adicionar tempo**; validar de ponta
+      a ponta pela interface vigente `windows/CompassoWails` o status do serviço,
+      a escolha do período, a senha correta/incorreta, o rate limit, o serviço
+      indisponível, a falha interna e o evento durável.
+      - Implementação concluída no serviço, IPC, interface Wails e instalador;
+        não há lacuna funcional conhecida no item 5.
+      - A interface instalada já cobriu estado do serviço, escolha do período,
+        senha incorreta, rate limit, serviço indisponível e limpeza da senha.
+      - Única pendência: concluir os testes de aceite pela interface instalada,
+        incluindo o sucesso com senha real e a conferência do bônus, evento e
+        saldo persistidos. Essa pendência não bloqueia o início do item 6.
+- [x] Conectar **Configurações** ao caminho privilegiado; validar conta, URL,
       credenciais, primeiro heartbeat e segredo não recuperável pela interface.
+      - A implementação vigente é exclusivamente `windows/CompassoWails`; a
+        WinUI histórica não foi alterada.
+      - Conta local e SID são enumerados pela interface e revalidados pelo
+        helper elevado; a confirmação é obrigatória e volta a ficar desmarcada
+        ao trocar a conta.
+      - URL, dispositivo e token são validados antes da gravação; o token cru
+        cruza somente um pipe efêmero restrito a administradores e é persistido
+        com DPAPI, sem retorno pela interface.
+      - O serviço só habilita a política depois do primeiro heartbeat aceito e
+        da gravação durável de `setup-complete`. Sucesso, credencial rejeitada,
+        estado do serviço, reinício e token limpo foram cobertos na VM.
 - [ ] Incluir serviço e interface no instalador vigente e validar do zero:
       instalar, configurar, reiniciar, atualizar, desinstalar e não deixar estado
       executável órfão.
+      - Serviço e interface já fazem parte do `CompassoSetup.exe`; ciclo de
+        desinstalação/reinstalação, remoção do serviço e atualização com a
+        interface aberta passaram na VM.
+      - A primeira fase do aceite realmente limpo passou: instalação sem
+        `%ProgramData%` preexistente, payload idêntico à build, atalhos e
+        desinstalador presentes, nenhuma configuração ou marcador herdado e
+        serviço `Manual`/`Stopped` até a primeira configuração, como no Linux.
+      - O uninstall agora encerra e aguarda `Compasso.exe`, remove
+        `%ProgramData%\Compasso` e não deixa o executável bloqueado. Na VM,
+        instalação por cima preservou a configuração existente e instalação
+        após uninstall completo voltou a `Manual`/`Stopped`, sem configuração
+        nem `setup-complete`.
+      - Permanece pendente concluir o aceite integral da portabilidade pela
+        tela e com reinício do Windows; isso não faz parte desta correção.
 
 Contrato: [windows-agent-contract.md](windows-agent-contract.md).
 

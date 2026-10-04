@@ -37,12 +37,10 @@ func (f fakeSync) SynchronizationReport() (bool, bool, string) {
 type fakeSettings struct {
 	settings PublicSettings
 	ok       bool
-	update   UpdatePublicConfigurationRequest
 }
 
-func (f *fakeSettings) UpdatePublicConfiguration(request UpdatePublicConfigurationRequest) error {
-	f.update = request
-	return nil
+func (f fakeSettings) PublicConfiguration() (PublicSettings, bool) {
+	return f.settings, f.ok
 }
 
 func TestFrameRoundTrip(t *testing.T) {
@@ -175,7 +173,7 @@ func TestHandlePublicConfigurationHidesToken(t *testing.T) {
 	service := NewService(&fakeBonus{}, fakeSync{}, fakeSettings{
 		settings: PublicSettings{
 			ServerURL: "https://api.test", DeviceID: "device",
-			ControlledUserSID: "S-1-5-21-1-2-3-1001", HasDeviceToken: true,
+			ControlledUserSID: "S-1-5-21-1-2-3-1001", HasDeviceToken: true, Configured: true,
 		},
 		ok: true,
 	})
@@ -189,7 +187,13 @@ func TestHandlePublicConfigurationHidesToken(t *testing.T) {
 }
 
 func TestHandlePublicConfigurationWhenNotConfigured(t *testing.T) {
-	service := NewService(&fakeBonus{}, fakeSync{}, fakeSettings{})
+	service := NewService(&fakeBonus{}, fakeSync{}, fakeSettings{
+		settings: PublicSettings{
+			ServerURL: "https://api.test", DeviceID: "device",
+			ControlledUserSID: "S-1-5-21-1-2-3-1001", HasDeviceToken: true,
+		},
+		ok: true,
+	})
 	response := service.Handle(Request{Operation: OperationPublicConfiguration})
 	if !response.OK || response.Settings == nil || response.Settings.Configured {
 		t.Fatalf("unexpected response %+v", response)

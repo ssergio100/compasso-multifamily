@@ -4,6 +4,9 @@
 #ifndef SetupIcon
   #error SetupIcon must be provided by build-portable-installer.ps1
 #endif
+#ifndef SourceAgent
+  #error SourceAgent must be provided by build-portable-installer.ps1
+#endif
 #ifndef OutputDir
   #error OutputDir must be provided by build-portable-installer.ps1
 #endif
@@ -47,14 +50,15 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 Name: "desktopicon"; Description: "Criar um ícone na área de trabalho"; GroupDescription: "Atalhos adicionais:"; Flags: unchecked
 
 [InstallDelete]
-Type: filesandordirs; Name: "{app}\*"
 Type: filesandordirs; Name: "{commonprograms}\Compasso"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
+Type: filesandordirs; Name: "{commonappdata}\Compasso"
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "Compasso.exe"; Flags: ignoreversion
+Source: "{#SourceAgent}"; DestDir: "{app}"; DestName: "CompassoAgent.exe"; Flags: ignoreversion restartreplace uninsrestartdelete
 Source: "{#SetupIcon}"; DestDir: "{app}"; DestName: "Compasso-{#MyAppVersion}.ico"; Flags: ignoreversion
 
 [Icons]
@@ -65,4 +69,27 @@ Name: "{autodesktop}\Compasso"; Filename: "{app}\Compasso.exe"; WorkingDir: "{ap
 Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Compasso"; Flags: deletekey
 
 [Run]
-Filename: "{app}\Compasso.exe"; Description: "Abrir o Compasso"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\CompassoAgent.exe"; Parameters: "install"; StatusMsg: "Registrando o serviço do Compasso..."; Flags: runhidden waituntilterminated
+Filename: "{app}\CompassoAgent.exe"; Parameters: "start-if-configured"; StatusMsg: "Iniciando o serviço do Compasso..."; Flags: runhidden waituntilterminated
+Filename: "{app}\Compasso.exe"; Parameters: "--settings"; Description: "Configurar o Compasso"; Flags: nowait postinstall skipifsilent runasoriginaluser
+
+[UninstallRun]
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM Compasso.exe"; RunOnceId: "CloseCompassoUI"; Flags: runhidden waituntilterminated
+Filename: "{app}\CompassoAgent.exe"; Parameters: "uninstall"; RunOnceId: "RemoveCompassoAgentService"; Flags: runhidden waituntilterminated skipifdoesntexist
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  AgentPath: String;
+  ResultCode: Integer;
+begin
+  Result := '';
+  { Restart Manager cannot close the Wails process when Setup and the app are
+    attached to different interactive sessions. Close it explicitly before any
+    executable is replaced; exit code 128 simply means it was not running. }
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Compasso.exe', '',
+    SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  AgentPath := ExpandConstant('{app}\CompassoAgent.exe');
+  if FileExists(AgentPath) then
+    Exec(AgentPath, 'stop', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
