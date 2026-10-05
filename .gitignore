@@ -26,6 +26,7 @@ secrets/
 
 # Local project material that is intentionally not published
 /.private/
+/.agents/
 
 # Tool caches, reports and temporary backups
 .cache/
